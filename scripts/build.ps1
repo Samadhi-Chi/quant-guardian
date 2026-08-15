@@ -10,9 +10,9 @@ if (-not $Python) {
     if (Test-Path -LiteralPath $LocalPython -PathType Leaf) {
         $Python = $LocalPython
     } else {
-        $PythonCommand = Get-Command python -CommandType Application -ErrorAction SilentlyContinue
+        $PythonCommand = @(Get-Command python -CommandType Application -ErrorAction SilentlyContinue)[0]
         if ($PythonCommand) {
-            $Python = $PythonCommand.Source
+            $Python = [string]$PythonCommand.Source
         }
     }
 }
