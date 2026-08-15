@@ -5,7 +5,7 @@ bandit==1.9.4
 boolean.py==5.0
 CacheControl==0.14.4
 certifi==2026.7.22
-chardet==5.2.0
+chardet==7.5.1
 charset-normalizer==3.5.0
 colorama==0.4.6
 coverage==7.15.4
