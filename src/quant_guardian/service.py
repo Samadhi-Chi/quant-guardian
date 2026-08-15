@@ -717,14 +717,20 @@ class GuardianService:
     ) -> bool:
         """Recognize a closed-market broker session without masking QMT failures."""
 
+        closed_session_failure = (
+            probe.status is ProbeStatus.TIMEOUT
+            or (
+                probe.status is ProbeStatus.FAILED
+                and probe.reason == "QMT account login status is not healthy"
+                and probe.account_status in _MARKET_CLOSED_IDLE_ACCOUNT_STATUSES
+            )
+        )
         return (
             not schedule.trading_day
             and snapshot.process_status is ProcessStatus.HEALTHY
             and snapshot.network_available
             and not snapshot.login_requires_manual
-            and probe.status is ProbeStatus.FAILED
-            and probe.reason == "QMT account login status is not healthy"
-            and probe.account_status in _MARKET_CLOSED_IDLE_ACCOUNT_STATUSES
+            and closed_session_failure
         )
 
     def _idle_confirmation_required(self) -> int:

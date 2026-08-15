@@ -136,6 +136,14 @@ class LoginFailedProbe(FakeProbe):
         )
 
 
+class TimeoutProbe(FakeProbe):
+    def health(self) -> ProbeObservation:
+        return ProbeObservation(
+            ProbeStatus.TIMEOUT,
+            "read-only probe exceeded 5 seconds",
+        )
+
+
 class ServiceTests(unittest.TestCase):
     def make_config(self) -> AppConfig:
         config = AppConfig()
@@ -268,6 +276,47 @@ class ServiceTests(unittest.TestCase):
                 self.assertEqual(
                     next_hour.schedule["anomaly_confirmation"]["current"], 1
                 )
+                self.assertEqual(recovery.calls, 0)
+            finally:
+                service.stop()
+
+    def test_closed_market_probe_timeout_is_idle_and_never_restarted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"LOCALAPPDATA": directory}
+        ):
+            moment = datetime(
+                2026, 8, 15, 10, 0, tzinfo=timezone(timedelta(hours=8))
+            )
+            config = self.make_config()
+            config.mode = "recover"
+            sentinel = Path(directory) / "RECOVERY_ENABLED"
+            sentinel.write_text(SENTINEL_CONTENT, encoding="utf-8")
+            recovery = FakeRecovery()
+            service = GuardianService(
+                config,
+                process_monitor=FakeProcessMonitor(),
+                log_monitor=FakeLogMonitor(LogSignal.EXPLICIT_DISCONNECT),
+                network_monitor=FakeNetworkMonitor(),
+                rocket_monitor=FakeRocketMonitor(),
+                trade_system_monitor=HealthyTradeMonitor(),
+                probe=TimeoutProbe(),
+                recovery=recovery,
+                audit=AuditLogger(Path(directory) / "logs"),
+                safety_gate=SafetyGate(config, sentinel),
+                now=moment,
+            )
+            try:
+                service.run_once(moment)
+                status = service.run_once(moment + timedelta(seconds=1))
+                qmt = status.components["qmt_api"]
+                children = {child["id"]: child for child in qmt["children"]}
+                self.assertEqual(status.state, GuardianState.HEALTHY)
+                self.assertEqual(qmt["state"], "idle")
+                self.assertEqual(children["qmt_api.process"]["state"], "healthy")
+                self.assertEqual(children["qmt_api.xtquant"]["state"], "idle")
+                self.assertEqual(children["qmt_api.account"]["state"], "idle")
+                self.assertFalse(status.attention["required"])
+                self.assertEqual(status.schedule["interval_seconds"], 3600.0)
                 self.assertEqual(recovery.calls, 0)
             finally:
                 service.stop()

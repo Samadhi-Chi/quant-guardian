@@ -14,6 +14,7 @@ First public preview.
 - SQLite-backed trends, events, recovery statistics and operation details.
 - Install marker, guarded uninstaller and WhatIf support.
 - Path-redacted diagnostic export.
+- Closed-market XTQuant timeouts render as idle when the QMT process and network are healthy.
 - Windows release ZIP, SBOM and SHA-256 manifest workflow.
 
 ### Security
