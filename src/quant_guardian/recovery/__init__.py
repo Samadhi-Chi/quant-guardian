@@ -1,0 +1,1 @@
+"""Controlled, path-validated QMT recovery."""

@@ -1,0 +1,101 @@
+{
+  "schema_version": 2,
+  "mode": "observe",
+  "qmt": {
+    "launcher": "C:\\QMT\\bin.x64\\XtItClient.exe",
+    "working_directory": "C:\\QMT\\config\\tradingtime",
+    "userdata_directory": "C:\\QMT\\userdata_mini",
+    "log_directory": "C:\\QMT\\userdata_mini\\log",
+    "process_names": ["XtMiniQmt.exe", "miniquote.exe"]
+  },
+  "probe": {
+    "enabled": true,
+    "python_executable": "",
+    "xtquant_parent": "",
+    "session_id": 100000001,
+    "timeout_seconds": 5.0,
+    "account_id_protected": ""
+  },
+  "rocket": {
+    "enabled": true,
+    "process_names": ["rocket.exe", "python.exe"],
+    "log_directory": "C:\\Quantclass\\data\\real_trading\\rocket\\data\\系统日志"
+  },
+  "trade_system": {
+    "enabled": true,
+    "selection_engine": "zeus",
+    "data_root": "C:\\Quantclass\\data",
+    "client_executable": "C:\\Quantclass\\quantclass.exe",
+    "client_process_names": ["quantclass.exe"],
+    "quantclass_config": "C:\\Quantclass\\config.json",
+    "fuel_process_names": ["fuel.exe"],
+    "fuel_status_file": "code\\data\\products-status.json",
+    "fuel_update_file": "code\\data\\products-update.json",
+    "fuel_log_directory": "code\\data\\log",
+    "aqua_process_names": ["aqua.exe"],
+    "aqua_log_file": "real_trading\\logs\\aqua.log",
+    "zeus_process_names": ["zeus.exe"],
+    "zeus_log_file": "real_trading\\logs\\zeus.log",
+    "rocket_process_names": ["rocket.exe", "python.exe"],
+    "rocket_log_directory": "real_trading\\rocket\\data\\系统日志",
+    "locker_directory": "real_trading\\data\\locker",
+    "data_overdue_grace_seconds": 900,
+    "task_log_tail_bytes": 262144
+  },
+  "monitoring": {
+    "active_start": "08:30",
+    "active_end": "16:30",
+    "active_interval_seconds": 5.0,
+    "idle_interval_seconds": 3600.0,
+    "anomaly_retry_seconds": 15.0,
+    "monitor_error_retry_seconds": 15.0,
+    "anomaly_confirmation_checks": 3,
+    "business_summary_interval_seconds": 60.0,
+    "business_summary_timeout_seconds": 2.0,
+    "business_summary_retry_seconds": 300.0,
+    "allow_idle_recovery": true,
+    "max_chart_points": 1200
+  },
+  "thresholds": {
+    "poll_interval_seconds": 5.0,
+    "failure_threshold": 3,
+    "failure_window_seconds": 45,
+    "startup_grace_seconds": 90,
+    "resume_grace_seconds": 120,
+    "verify_successes": 3,
+    "verify_min_span_seconds": 30,
+    "verification_timeout_seconds": 180,
+    "log_stale_seconds": 30
+  },
+  "recovery": {
+    "graceful_close_seconds": 20,
+    "backoff_seconds": [60, 120, 300, 600],
+    "max_attempts_per_30_minutes": 3,
+    "max_attempts_per_day": 5,
+    "allow_qmt_restart_while_rocket_active": false,
+    "require_manual_rocket_resume": true
+  },
+  "trading": {
+    "timezone": "Asia/Shanghai",
+    "premarket_start": "08:30",
+    "morning_start": "09:15",
+    "morning_end": "11:30",
+    "afternoon_start": "13:00",
+    "afternoon_end": "15:00",
+    "postmarket_end": "15:30",
+    "holidays": [],
+    "manual_closed_dates": [],
+    "manual_open_dates": [],
+    "market": "SH"
+  },
+  "notifications": {
+    "desktop_enabled": true,
+    "sound_on_critical": true,
+    "dedupe_minutes": 10
+  },
+  "diagnostics": {
+    "retention_days": 30,
+    "include_raw_qmt_logs": false,
+    "sqlite_index_enabled": true
+  }
+}

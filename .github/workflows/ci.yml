@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: tests (${{ matrix.python }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.14"]
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Unit tests and coverage
+        run: |
+          python -m pytest --cov=quant_guardian --cov-report=term-missing --cov-report=json
+          python scripts/check_coverage.py coverage.json
+      - name: Installer and uninstaller safety
+        shell: powershell
+        run: .\scripts\test-install-safety.ps1
+
+  security:
+    name: security
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
+          cache: pip
+      - name: Install analysis tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Ruff
+        run: python -m ruff check .
+      - name: Bandit
+        run: python -m bandit -c pyproject.toml -r src -ll
+      - name: Dependency audit
+        run: python -m pip_audit -r requirements-lock.txt --strict
+      - name: Version contract
+        run: python scripts/check_version.py --tag v0.3.0-beta.1
+
+  secrets:
+    name: secrets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+
+  package:
+    name: package
+    needs: [tests, security, secrets]
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up release Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14.6"
+          cache: pip
+      - name: Install locked runtime and package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-lock.txt
+          python -m pip install -e . --no-deps
+      - name: Build
+        shell: powershell
+        run: .\scripts\build.ps1
+      - name: Executable smoke tests
+        shell: powershell
+        run: |
+          $exe = ".\dist\Quant Guardian\Quant Guardian.exe"
+          foreach ($arguments in @("--version", "--simulate", "--ui-smoke")) {
+            $process = Start-Process -FilePath $exe -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
+            if ($process.ExitCode -ne 0) {
+              throw "Smoke test failed: $arguments exit $($process.ExitCode)"
+            }
+          }
+      - name: Package and validate
+        shell: powershell
+        run: .\scripts\package-release.ps1 -SkipBuild
+      - name: Upload validated assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: quant-guardian-windows-x64
+          path: release-assets/*
+          if-no-files-found: error
