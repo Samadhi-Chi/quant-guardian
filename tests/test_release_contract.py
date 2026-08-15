@@ -7,6 +7,7 @@ import zipfile
 from pathlib import Path
 
 from quant_guardian import __version__
+from scripts.check_sarif import actionable_results
 from scripts.check_version import release_tag, validate_project_metadata
 from scripts.validate_release import REQUIRED_SUFFIXES, validate_zip
 
@@ -31,6 +32,28 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn("Get-Command python -CommandType Application", build_script)
         self.assertIn("[string]$Python", package_script)
         self.assertIn("-Python (Get-Command python -CommandType Application).Source", workflow)
+
+    def test_sarif_gate_accepts_empty_results_and_rejects_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "codeql.sarif"
+            path.write_text(
+                json.dumps({"version": "2.1.0", "runs": [{"results": []}]}),
+                encoding="utf-8",
+            )
+            self.assertEqual(actionable_results(path), [])
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": "2.1.0",
+                        "runs": [{"results": [{"ruleId": "py/example"}]}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                [item["ruleId"] for item in actionable_results(path)],
+                ["py/example"],
+            )
 
     def make_zip(self, path: Path, *, extra: dict[str, bytes] | None = None) -> None:
         prefix = "Quant-Guardian-v0.3.0-beta.1-windows-x64/"
