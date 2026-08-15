@@ -2,14 +2,25 @@
 param(
     [string]$Version = "0.3.0b1",
     [string]$ReleaseTag = "v0.3.0-beta.1",
+    [string]$Python = "",
     [switch]$SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$Python = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
-if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) {
-    throw "Virtual environment not found. Run scripts\bootstrap.ps1 -Dev first."
+$LocalPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+if (-not $Python) {
+    if (Test-Path -LiteralPath $LocalPython -PathType Leaf) {
+        $Python = $LocalPython
+    } else {
+        $PythonCommand = Get-Command python -CommandType Application -ErrorAction SilentlyContinue
+        if ($PythonCommand) {
+            $Python = $PythonCommand.Source
+        }
+    }
+}
+if (-not $Python -or -not (Test-Path -LiteralPath $Python -PathType Leaf)) {
+    throw "Python 3.11-3.14 was not found. Run scripts\bootstrap.ps1 -Dev or pass -Python."
 }
 
 Push-Location $ProjectRoot
@@ -23,7 +34,7 @@ try {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
     if (-not $SkipBuild) {
-        & ".\scripts\build.ps1"
+        & ".\scripts\build.ps1" -Python $Python
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
 

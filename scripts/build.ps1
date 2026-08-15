@@ -1,12 +1,28 @@
 [CmdletBinding()]
-param()
+param(
+    [string]$Python = ""
+)
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$Python = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+$LocalPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+if (-not $Python) {
+    if (Test-Path -LiteralPath $LocalPython -PathType Leaf) {
+        $Python = $LocalPython
+    } else {
+        $PythonCommand = Get-Command python -CommandType Application -ErrorAction SilentlyContinue
+        if ($PythonCommand) {
+            $Python = $PythonCommand.Source
+        }
+    }
+}
 $Spec = Join-Path $ProjectRoot "packaging\quant-guardian.spec"
-if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) {
-    throw "Virtual environment not found. Run .\scripts\bootstrap.ps1 -Dev first."
+if (-not $Python -or -not (Test-Path -LiteralPath $Python -PathType Leaf)) {
+    throw "Python 3.11-3.14 was not found. Run .\scripts\bootstrap.ps1 -Dev or pass -Python."
+}
+$RuntimeVersion = (& $Python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')").Trim()
+if ($LASTEXITCODE -ne 0 -or $RuntimeVersion -notmatch '^3\.(11|12|13|14)$') {
+    throw "Unsupported build Python: $RuntimeVersion. Expected Python 3.11-3.14."
 }
 Push-Location $ProjectRoot
 try {

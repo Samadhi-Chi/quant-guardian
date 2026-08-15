@@ -17,6 +17,21 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertEqual(__version__, "0.3.0b1")
         self.assertEqual(release_tag(__version__), "v0.3.0-beta.1")
 
+    def test_build_scripts_support_ci_python_without_repository_venv(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        build_script = (project_root / "scripts" / "build.ps1").read_text(
+            encoding="utf-8"
+        )
+        package_script = (project_root / "scripts" / "package-release.ps1").read_text(
+            encoding="utf-8"
+        )
+        workflow = (project_root / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Get-Command python -CommandType Application", build_script)
+        self.assertIn("[string]$Python", package_script)
+        self.assertIn("-Python (Get-Command python -CommandType Application).Source", workflow)
+
     def make_zip(self, path: Path, *, extra: dict[str, bytes] | None = None) -> None:
         prefix = "Quant-Guardian-v0.3.0-beta.1-windows-x64/"
         remaining = dict(extra or {})

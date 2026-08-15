@@ -57,8 +57,9 @@ jobs:
       - name: Build and package
         shell: powershell
         run: |
-          .\scripts\build.ps1
-          .\scripts\package-release.ps1 -ReleaseTag "${{ inputs.release_tag }}" -SkipBuild
+          $python = (Get-Command python -CommandType Application).Source
+          .\scripts\build.ps1 -Python $python
+          .\scripts\package-release.ps1 -Python $python -ReleaseTag "${{ inputs.release_tag }}" -SkipBuild
       - name: Executable smoke tests
         shell: powershell
         run: |
