@@ -64,8 +64,9 @@ class GatewayChannelTests(unittest.TestCase):
         )
         with patch("http.client.HTTPSConnection") as connection:
             for destination in destinations:
-                with self.subTest(destination=destination), self.assertRaises(
-                    urllib.error.URLError
+                with (
+                    self.subTest(destination=destination),
+                    self.assertRaises(urllib.error.URLError),
                 ):
                     with open_trusted_https(
                         urllib.request.Request(destination),
@@ -137,9 +138,7 @@ class GatewayChannelTests(unittest.TestCase):
         self.assertEqual(self.store.get_meta("telegram.update_offset"), "18")
 
     def test_telegram_rejects_group_and_sends_inline_confirmation(self) -> None:
-        adapter = TelegramAdapter(
-            TelegramGatewayConfig(), token=TELEGRAM_TOKEN, store=self.store
-        )
+        adapter = TelegramAdapter(TelegramGatewayConfig(), token=TELEGRAM_TOKEN, store=self.store)
         self.assertIsNone(
             adapter._inbound(
                 {
@@ -166,13 +165,11 @@ class GatewayChannelTests(unittest.TestCase):
                 "telegram",
                 "42",
                 "确认重启？",
-                ((('确认', 'qg:restart:confirm:QGC-' + 'a' * 24),),),
+                ((("确认", "qg:restart:confirm:QGC-" + "a" * 24),),),
             )
         )
         self.assertEqual(payloads[0]["chat_id"], "42")
-        self.assertEqual(
-            payloads[0]["reply_markup"]["inline_keyboard"][0][0]["text"], "确认"
-        )
+        self.assertEqual(payloads[0]["reply_markup"]["inline_keyboard"][0][0]["text"], "确认")
 
     def test_telegram_auth_error_never_exposes_token(self) -> None:
         token = TELEGRAM_TOKEN
@@ -189,9 +186,7 @@ class GatewayChannelTests(unittest.TestCase):
         self.assertNotIn(token, str(raised.exception))
 
     def test_telegram_rejects_oversized_api_response(self) -> None:
-        adapter = TelegramAdapter(
-            TelegramGatewayConfig(), token=TELEGRAM_TOKEN, store=self.store
-        )
+        adapter = TelegramAdapter(TelegramGatewayConfig(), token=TELEGRAM_TOKEN, store=self.store)
         response = FakeResponse({"ok": True, "result": {"value": "x" * 2_000_000}})
         with patch(
             "quant_guardian.gateway.channels.telegram.open_trusted_https",
@@ -201,9 +196,7 @@ class GatewayChannelTests(unittest.TestCase):
                 adapter.test_connection()
 
     def test_telegram_rejects_malformed_token_before_network(self) -> None:
-        adapter = TelegramAdapter(
-            TelegramGatewayConfig(), token="not/a/token", store=self.store
-        )
+        adapter = TelegramAdapter(TelegramGatewayConfig(), token="not/a/token", store=self.store)
         with patch("quant_guardian.gateway.channels.telegram.open_trusted_https") as urlopen:
             with self.assertRaisesRegex(AuthenticationError, "format"):
                 adapter.test_connection()
@@ -265,6 +258,29 @@ class GatewayChannelTests(unittest.TestCase):
         self.assertEqual(message.chat_id, "owner")
         self.assertEqual(adapter._get_context("owner"), "context-secret")
         self.assertNotIn("context-secret", self.vault.path.read_text(encoding="utf-8"))
+
+    def test_weixin_successful_poll_clears_a_previous_network_error(self) -> None:
+        config = WeixinGatewayConfig(account_id="bot@im.bot", poll_timeout_seconds=5)
+        adapter = WeixinAdapter(config, token="token", store=self.store, vault=self.vault)
+        stop = MagicMock()
+        stop.is_set.side_effect = [False, False, True]
+        stop.wait.return_value = False
+        responses = [
+            ChannelError("temporary network failure"),
+            {"ret": 0, "get_updates_buf": "next", "msgs": []},
+        ]
+
+        with patch(
+            "quant_guardian.gateway.channels.weixin._request_json",
+            side_effect=responses,
+        ):
+            adapter.run(stop, lambda _message: None)
+
+        state = {item["channel"]: item for item in self.store.channel_states()}["weixin"]
+        self.assertEqual(state["status"], "connected")
+        self.assertEqual(state["last_error"], "")
+        self.assertEqual(state["reconnect_count"], 1)
+        self.assertEqual(self.store.get_meta("weixin.sync_buf"), "next")
 
     def test_weixin_send_retries_without_stale_context(self) -> None:
         config = WeixinGatewayConfig(account_id="bot@im.bot")

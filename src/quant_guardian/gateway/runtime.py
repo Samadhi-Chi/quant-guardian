@@ -18,6 +18,7 @@ from quant_guardian.gateway.secrets import CredentialVault
 from quant_guardian.gateway.store import GatewayStore
 
 CHANNEL_STOP_TIMEOUT_SECONDS = 70.0
+CONFIG_SYNC_INTERVAL_SECONDS = 2.0
 
 
 class GatewayRuntime:
@@ -41,11 +42,13 @@ class GatewayRuntime:
         )
         self._stop = threading.Event()
         self._lock = threading.RLock()
+        self._sync_lock = threading.Lock()
         self._channel_threads: dict[str, threading.Thread] = {}
         self._channel_stops: dict[str, threading.Event] = {}
         self._signatures: dict[str, tuple[str, ...]] = {}
         self._stopping_channels: set[str] = set()
         self._dispatcher: threading.Thread | None = None
+        self._supervisor: threading.Thread | None = None
         self._injected_adapters = adapters
         self.adapters: dict[str, ChannelAdapter] = {}
 
@@ -72,8 +75,7 @@ class GatewayRuntime:
         if self._injected_adapters is not None:
             adapters = dict(self._injected_adapters)
             return adapters, {
-                name: (name, "injected", str(id(adapter)))
-                for name, adapter in adapters.items()
+                name: (name, "injected", str(id(adapter))) for name, adapter in adapters.items()
             }
         config = load_messaging_config(self.config_path)
         adapters = self._build_adapters(config)
@@ -95,20 +97,39 @@ class GatewayRuntime:
         return adapters, signatures
 
     def sync_config(self) -> None:
-        desired, signatures = self._desired()
-        with self._lock:
-            changed = {
-                name
-                for name in set(self.adapters) | set(desired)
-                if name not in desired
-                or name not in self.adapters
-                or self._signatures.get(name) != signatures.get(name)
+        if self._stop.is_set():
+            return
+        with self._sync_lock:
+            desired, signatures = self._desired()
+            states = {
+                str(item.get("channel", "")): str(item.get("status", ""))
+                for item in self.store.channel_states()
             }
-        stopped = {name for name in changed if self._stop_channel(name)}
-        for name in stopped:
-            adapter = desired.get(name)
-            if adapter is not None:
-                self._start_channel(name, adapter, signatures[name])
+            with self._lock:
+                dead = {
+                    name
+                    for name, thread in self._channel_threads.items()
+                    if not thread.is_alive() and states.get(name) != "auth_required"
+                }
+                changed = {
+                    name
+                    for name in set(self.adapters) | set(desired)
+                    if name not in desired
+                    or name not in self.adapters
+                    or self._signatures.get(name) != signatures.get(name)
+                } | dead
+            for name in dead:
+                self.store.update_channel_state(
+                    name,
+                    "disconnected",
+                    error="channel worker exited unexpectedly; restarting",
+                    reconnected=True,
+                )
+            stopped = {name for name in changed if self._stop_channel(name)}
+            for name in stopped:
+                adapter = desired.get(name)
+                if adapter is not None and not self._stop.is_set():
+                    self._start_channel(name, adapter, signatures[name])
 
     def _start_channel(
         self,
@@ -157,7 +178,12 @@ class GatewayRuntime:
         return True
 
     def start(self) -> None:
-        if self._dispatcher and self._dispatcher.is_alive():
+        if (
+            self._dispatcher
+            and self._dispatcher.is_alive()
+            and self._supervisor
+            and self._supervisor.is_alive()
+        ):
             return
         self._stop.clear()
         self.sync_config()
@@ -167,21 +193,47 @@ class GatewayRuntime:
             daemon=True,
         )
         self._dispatcher.start()
+        self._supervisor = threading.Thread(
+            target=self._supervise_loop,
+            name="quant-guardian-channel-supervisor",
+            daemon=True,
+        )
+        self._supervisor.start()
 
     def stop(self) -> None:
         self._stop.set()
+        with self._lock:
+            stop_events = tuple(self._channel_stops.values())
+        for stop_event in stop_events:
+            stop_event.set()
+        if self._supervisor and self._supervisor.is_alive():
+            self._supervisor.join(timeout=CONFIG_SYNC_INTERVAL_SECONDS + 1)
         for name in tuple(self._channel_threads):
             self._stop_channel(name)
         if self._dispatcher and self._dispatcher.is_alive():
             self._dispatcher.join(timeout=10)
         self._dispatcher = None
+        self._supervisor = None
 
     @property
     def running(self) -> bool:
         return bool(
             (self._dispatcher and self._dispatcher.is_alive())
+            or (self._supervisor and self._supervisor.is_alive())
             or any(thread.is_alive() for thread in self._channel_threads.values())
         )
+
+    def _supervise_loop(self) -> None:
+        while not self._stop.wait(CONFIG_SYNC_INTERVAL_SECONDS):
+            try:
+                self.sync_config()
+                if self.store.get_meta("gateway.supervisor_error"):
+                    self.store.set_meta("gateway.supervisor_error", "")
+            except Exception as exc:  # a bad reload must not kill supervision
+                self.store.set_meta(
+                    "gateway.supervisor_error",
+                    f"{type(exc).__name__}: {str(exc)[:240]}",
+                )
 
     def _handle(self, message: InboundMessage) -> None:
         if not self.store.record_inbound_once(

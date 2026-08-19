@@ -238,6 +238,11 @@ class WeixinAdapter(ChannelAdapter):
                         raise AuthenticationError("Weixin iLink login expired; scan QR again")
                     raise ChannelError(f"Weixin iLink getupdates failed: {ret or errcode}")
                 failures = 0
+                self.store.update_channel_state(
+                    self.name,
+                    "connected",
+                    identity=self.config.account_id[:12],
+                )
                 new_sync = str(response.get("get_updates_buf") or "")
                 for raw in response.get("msgs") or []:
                     message = self._inbound(raw)
