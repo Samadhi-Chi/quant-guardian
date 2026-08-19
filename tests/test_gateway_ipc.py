@@ -170,9 +170,9 @@ class GatewayIpcTests(unittest.TestCase):
 
     def test_remote_status_never_exposes_local_path_or_account_number(self) -> None:
         status = FakeStatus().to_dict()
-        status["reason"] = r"failed at C:\Users\sheng\QMT\secret.log account=123456789012"
+        status["reason"] = r"failed at C:\Users\ExampleUser\QMT\secret.log account=123456789012"
         sanitized = str(safe_status(status))
-        self.assertNotIn(r"C:\Users\sheng", sanitized)
+        self.assertNotIn(r"C:\Users\ExampleUser", sanitized)
         self.assertNotIn("123456789012", sanitized)
 
     def test_wrong_principal_is_rejected(self) -> None:

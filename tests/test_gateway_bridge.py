@@ -32,7 +32,7 @@ class GatewayBridgeTests(unittest.TestCase):
     def notification(self, key: str, severity: str = "warning") -> Notification:
         return Notification(
             "需要关注",
-            r"日志 C:\Users\sheng\secret\qmt.log token=abc123",
+            r"日志 C:\Users\ExampleUser\secret\qmt.log token=abc123",
             severity,
             key,
             datetime.now().astimezone(),
@@ -52,7 +52,7 @@ class GatewayBridgeTests(unittest.TestCase):
         self.bridge.on_notification(self.notification("trade_system:zeus:critical", "critical"))
         messages = self.store.claim_outbound("telegram")
         self.assertEqual(len(messages), 1)
-        self.assertNotIn(r"C:\Users\sheng", messages[0].text)
+        self.assertNotIn(r"C:\Users\ExampleUser", messages[0].text)
         self.assertIn("<LOCAL_PATH>", messages[0].text)
 
     def test_operation_event_flags_and_success_option_are_enforced(self) -> None:
