@@ -8,7 +8,7 @@ on:
         required: true
         type: choice
         options:
-          - v0.3.0-beta.1
+          - v0.4.0-beta.1
       confirm:
         description: Type PUBLISH-PRE-RELEASE
         required: true
@@ -17,7 +17,7 @@ on:
 jobs:
   release:
     name: validate and publish Windows pre-release
-    if: inputs.release_tag == 'v0.3.0-beta.1' && inputs.confirm == 'PUBLISH-PRE-RELEASE'
+    if: inputs.release_tag == 'v0.4.0-beta.1' && inputs.confirm == 'PUBLISH-PRE-RELEASE'
     runs-on: windows-latest
     environment: release
     permissions:
@@ -64,11 +64,16 @@ jobs:
         shell: powershell
         run: |
           $exe = ".\dist\Quant Guardian\Quant Guardian.exe"
+          $gateway = ".\dist\Quant Guardian\Quant Guardian Gateway.exe"
           foreach ($arguments in @("--version", "--simulate", "--ui-smoke")) {
             $process = Start-Process -FilePath $exe -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
             if ($process.ExitCode -ne 0) {
               throw "Smoke test failed: $arguments exit $($process.ExitCode)"
             }
+          }
+          $gatewayProcess = Start-Process -FilePath $gateway -ArgumentList "--version" -Wait -PassThru -WindowStyle Hidden
+          if ($gatewayProcess.ExitCode -ne 0) {
+            throw "Gateway smoke test failed: --version exit $($gatewayProcess.ExitCode)"
           }
       - name: Attest release assets
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
@@ -79,4 +84,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ inputs.release_tag }}" .\release-assets\* --verify-tag --prerelease --title "Quant Guardian ${{ inputs.release_tag }}" --notes-file .\docs\RELEASE_NOTES_v0.3.0-beta.1.md
+          gh release create "${{ inputs.release_tag }}" .\release-assets\* --verify-tag --prerelease --title "Quant Guardian ${{ inputs.release_tag }}" --notes-file .\docs\RELEASE_NOTES_v0.4.0-beta.1.md

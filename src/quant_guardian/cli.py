@@ -4,6 +4,7 @@ import argparse
 import json
 import signal
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -73,22 +74,13 @@ def run_headless(service: GuardianService, once: bool) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    if args.simulate:
-        print(json.dumps(run_simulation(), ensure_ascii=False, indent=2))
-        return 0
-
-    first_run = not args.config.exists()
-    try:
-        config = _load_or_create(args.config)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        print(f"Configuration error: {exc}", file=sys.stderr)
-        return 2
-
-    if args.headless or args.once:
-        return run_headless(GuardianService(config), args.once)
-
+def _run_desktop(
+    args: argparse.Namespace,
+    config,
+    *,
+    first_run: bool,
+    runtime_root: Path | None = None,
+) -> int:
     try:
         from quant_guardian.ui.app import run_gui
     except ImportError as exc:
@@ -105,7 +97,39 @@ def main(argv: list[str] | None = None) -> int:
         start_monitoring=not args.ui_smoke,
         auto_quit_ms=800 if args.ui_smoke else None,
         show_onboarding=first_run and not args.ui_smoke,
+        runtime_root=runtime_root,
     )
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    if args.simulate:
+        print(json.dumps(run_simulation(), ensure_ascii=False, indent=2))
+        return 0
+
+    if args.ui_smoke:
+        with tempfile.TemporaryDirectory(prefix="quant-guardian-ui-smoke-") as directory:
+            runtime_root = Path(directory)
+            args.config = runtime_root / "config" / "config.json"
+            config = _load_or_create(args.config)
+            return _run_desktop(
+                args,
+                config,
+                first_run=True,
+                runtime_root=runtime_root,
+            )
+
+    first_run = not args.config.exists()
+    try:
+        config = _load_or_create(args.config)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        return 2
+
+    if args.headless or args.once:
+        return run_headless(GuardianService(config), args.once)
+
+    return _run_desktop(args, config, first_run=first_run)
 
 
 if __name__ == "__main__":

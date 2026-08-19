@@ -12,6 +12,9 @@ from PySide6.QtWidgets import QApplication
 
 from quant_guardian.config import AppConfig
 from quant_guardian.domain.models import GuardianState, RecommendedAction
+from quant_guardian.gateway.config import MessagingConfig, save_messaging_config
+from quant_guardian.gateway.secrets import CredentialVault
+from quant_guardian.gateway.store import GatewayStore
 from quant_guardian.service import ServiceStatus
 from quant_guardian.ui.design_system import install_ui_font
 from quant_guardian.ui.main_window import MainWindow
@@ -462,7 +465,66 @@ def main() -> int:
     application.setFont(QFont(install_ui_font(), 10))
     config = AppConfig()
     service = PreviewService()
-    window = MainWindow(service, config, args.output / "preview-config.json", enable_tray=False)
+    messaging_path = args.output / "messaging.json"
+    messaging = MessagingConfig(gateway_enabled=True)
+    messaging.telegram.enabled = True
+    messaging.telegram.allowed_user_ids = ["demo-owner"]
+    messaging.telegram.home_chat_id = "demo-owner"
+    messaging.weixin.enabled = True
+    messaging.weixin.account_id = "demo@im.bot"
+    messaging.weixin.allowed_user_ids = ["demo-owner"]
+    messaging.weixin.home_chat_id = "demo-owner"
+    messaging.remote_control.enabled = True
+    save_messaging_config(messaging, messaging_path)
+    preview_state_path = args.output / "state" / "gateway.db"
+    for suffix in ("", "-wal", "-shm"):
+        preview_state_path.with_name(preview_state_path.name + suffix).unlink(missing_ok=True)
+    gateway_store = GatewayStore(preview_state_path)
+    gateway_store.update_channel_state("telegram", "connected", identity="@quant_guardian_demo")
+    gateway_store.update_channel_state("weixin", "connected", identity="demo@im.bot")
+    gateway_store.record_command(
+        request_id="QGR-DEMO-STATUS",
+        channel="telegram",
+        sender_id="demo-owner",
+        chat_id="demo-owner",
+        command="status",
+        status="succeeded",
+        reason="已返回脱敏状态摘要",
+    )
+    gateway_store.record_command(
+        request_id="QGR-DEMO-RESTART",
+        channel="weixin",
+        sender_id="demo-owner",
+        chat_id="demo-owner",
+        command="restart_qmt",
+        status="succeeded",
+        reason="QMT受控重启已受理，正在验证",
+        operation_id="QGO-DEMO-01",
+    )
+    gateway_store.enqueue_outbound(
+        channel="telegram",
+        chat_id="demo-owner",
+        text="模拟告警",
+        idempotency_key="preview:telegram:1",
+    )
+    outbound = gateway_store.claim_outbound("telegram")
+    gateway_store.complete_outbound(outbound[0].message_id, success=True)
+    vault = CredentialVault(
+        args.output / "secrets" / "messaging-secrets.json",
+        protect=lambda value: "preview:" + value[::-1],
+        unprotect=lambda value: value.removeprefix("preview:")[::-1],
+    )
+    vault.set("telegram_bot_token", "synthetic-telegram-token")
+    vault.set("weixin_bot_token", "synthetic-weixin-token")
+    window = MainWindow(
+        service,
+        config,
+        args.output / "preview-config.json",
+        enable_tray=False,
+        messaging_config_path=messaging_path,
+        gateway_store=gateway_store,
+        credential_vault=vault,
+    )
     window.resize(1120, 820)
 
     healthy = make_status()
@@ -515,6 +577,16 @@ def main() -> int:
         },
     )
     window._render_monitor_samples(list(window._history))
+    window._gateway_generation += 1
+    window._apply_gateway_data(
+        window._gateway_generation,
+        {
+            "states": gateway_store.channel_states(),
+            "stats": gateway_store.stats(since=BASE - timedelta(days=1)),
+            "rows": gateway_store.activity(limit=20),
+            "all_rows": gateway_store.activity(limit=20),
+        },
+    )
     save_widget(application, window, args.output / "04-monitor-today.png")
 
     window.monitoring_page.verticalScrollBar().setValue(575)
@@ -545,6 +617,12 @@ def main() -> int:
     save_widget(application, window, args.output / "07-settings-paths.png")
     window._switch_settings(0)
     save_widget(application, window, args.output / "08-settings-recovery-safety.png")
+    window._switch_settings(5)
+    save_widget(application, window, args.output / "13-settings-messaging.png")
+    window._switch_settings(7)
+    save_widget(application, window, args.output / "14-settings-remote-control.png")
+    window._switch_settings(8)
+    save_widget(application, window, args.output / "15-settings-messaging-audit.png")
 
     window.switch_page(0)
     window.apply_status(healthy)
@@ -556,7 +634,7 @@ def main() -> int:
     save_widget(application, window, args.output / "10-home-dark.png")
     window.deleteLater()
     application.processEvents()
-    print(f"rendered 12 previews to {args.output}")
+    print(f"rendered 15 previews to {args.output}")
     return 0
 
 

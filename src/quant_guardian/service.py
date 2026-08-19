@@ -388,6 +388,9 @@ class GuardianService:
         *,
         manual: bool,
         snapshot: HealthSnapshot,
+        initiator: str = "",
+        remote_channel: str = "",
+        remote_request_id: str = "",
     ) -> dict[str, object]:
         incident_id = self._current_incident_id
         if not manual and not incident_id:
@@ -405,13 +408,17 @@ class GuardianService:
             "operation_id": self._new_identifier("QGO", at),
             "incident_id": incident_id,
             "operation_type": "qmt_restart",
-            "initiator": "manual" if manual else "automatic",
+            "initiator": initiator or ("manual" if manual else "automatic"),
             "target_component": "qmt_api",
             "context": "production",
             "attempt_no": attempt_no,
             "started_at": at,
             "manual": manual,
         }
+        if remote_channel:
+            operation["remote_channel"] = remote_channel
+        if remote_request_id:
+            operation["remote_request_id"] = remote_request_id
         self._active_recovery = operation
         return operation
 
@@ -1283,12 +1290,18 @@ class GuardianService:
         schedule: ScheduleDecision,
         *,
         manual: bool = False,
+        initiator: str = "",
+        remote_channel: str = "",
+        remote_request_id: str = "",
     ) -> ServiceStatus:
         started_at = datetime.now().astimezone()
         operation = self._begin_recovery_operation(
             started_at,
             manual=manual,
             snapshot=snapshot,
+            initiator=initiator,
+            remote_channel=remote_channel,
+            remote_request_id=remote_request_id,
         )
         event_id = str(operation["operation_id"])
         transition = (
@@ -1310,7 +1323,9 @@ class GuardianService:
                 "rocket_active": snapshot.rocket_active,
                 "trading_phase": snapshot.trading_phase,
                 "reason": (
-                    "operator confirmed QMT restart"
+                    "remote operator confirmed QMT restart"
+                    if remote_channel
+                    else "operator confirmed QMT restart"
                     if manual
                     else self.machine.last_transition.reason
                 ),
@@ -1385,10 +1400,13 @@ class GuardianService:
         self._publish_status(status)
         self.notifications.publish(
             (
-                "QMT人工重启已启动"
+                "QMT远程重启已启动"
+                if remote_channel and result.success
+                else "QMT远程重启失败"
+                if remote_channel
+                else "QMT人工重启已启动"
                 if manual and result.success
-                else "QMT人工重启失败"
-                if manual
+                else "QMT人工重启失败" if manual
                 else "QMT恢复已启动"
                 if result.success
                 else "QMT恢复失败"
@@ -1402,7 +1420,15 @@ class GuardianService:
         )
         return status
 
-    def _record_blocked_qmt_restart(self, reason: str, *, phase: str) -> None:
+    def _record_blocked_qmt_restart(
+        self,
+        reason: str,
+        *,
+        phase: str,
+        initiator: str = "manual",
+        remote_channel: str = "",
+        remote_request_id: str = "",
+    ) -> None:
         at = datetime.now().astimezone()
         operation_id = self._new_identifier("QGO", at)
         self.audit.record(
@@ -1411,7 +1437,7 @@ class GuardianService:
                 "component_id": "qmt_api",
                 "operation_id": operation_id,
                 "operation_type": "qmt_restart",
-                "initiator": "manual",
+                "initiator": initiator,
                 "target_component": "qmt_api",
                 "context": "production",
                 "started_at": at,
@@ -1419,17 +1445,36 @@ class GuardianService:
                 "status": "blocked",
                 "phase": phase,
                 "reason": reason,
+                "remote_channel": remote_channel,
+                "remote_request_id": remote_request_id,
             },
             severity="warning",
             moment=at,
             event_id=operation_id,
         )
 
-    def manual_restart(self, *, operator_confirmed: bool = False) -> ServiceStatus:
+    def manual_restart(
+        self,
+        *,
+        operator_confirmed: bool = False,
+        initiator: str = "manual",
+        remote_channel: str = "",
+        remote_request_id: str = "",
+    ) -> ServiceStatus:
+        allowed_initiators = {"manual", "remote_telegram", "remote_weixin"}
+        if initiator not in allowed_initiators:
+            raise ValueError("unsupported QMT restart initiator")
+        if initiator.startswith("remote_"):
+            expected_channel = initiator.removeprefix("remote_")
+            if remote_channel != expected_channel or not remote_request_id:
+                raise ValueError("remote restart metadata is incomplete")
         if not operator_confirmed:
             self._record_blocked_qmt_restart(
                 "explicit operator confirmation was not supplied",
                 phase="confirmation",
+                initiator=initiator,
+                remote_channel=remote_channel,
+                remote_request_id=remote_request_id,
             )
             raise PermissionError("重启QMT前必须完成确认")
         if self.machine.state in {
@@ -1439,6 +1484,9 @@ class GuardianService:
             self._record_blocked_qmt_restart(
                 "another QMT restart is still executing or awaiting stable verification",
                 phase="exclusive_verification",
+                initiator=initiator,
+                remote_channel=remote_channel,
+                remote_request_id=remote_request_id,
             )
             raise RuntimeError("QMT重启仍在执行或稳定验证中，请等待当前操作完成")
         if self.machine.last_snapshot is None:
@@ -1455,15 +1503,41 @@ class GuardianService:
             probe = self.probe.health()
             log = self.log_monitor.observe(now)
             rocket = self.rocket_monitor.observe(now)
+            network_available = self.network_monitor.is_available()
             trade = self.trade_system_monitor.observe(
                 now, rocket=rocket, active_window=schedule.mode == "active"
             )
             current_snapshot = replace(
                 snapshot,
                 observed_at=now,
+                process_status=process.status,
+                probe_status=probe.status,
+                log_signal=log.signal,
+                network_available=network_available,
                 rocket_active=rocket.active,
                 trading_phase=self.calendar.phase_at(now),
+                account_status=probe.account_status,
+                login_requires_manual=log.login_requires_manual,
             )
+            if initiator.startswith("remote_"):
+                blocked_reason = (
+                    "network is unavailable; remote QMT restart is blocked"
+                    if not current_snapshot.network_available
+                    else "Rocket is active; remote QMT restart is blocked"
+                    if current_snapshot.rocket_active
+                    else "QMT requires manual login; remote restart is blocked"
+                    if current_snapshot.login_requires_manual
+                    else ""
+                )
+                if blocked_reason:
+                    self._record_blocked_qmt_restart(
+                        blocked_reason,
+                        phase="remote_preflight",
+                        initiator=initiator,
+                        remote_channel=remote_channel,
+                        remote_request_id=remote_request_id,
+                    )
+                    raise PermissionError(blocked_reason)
             status = self._execute_recovery(
                 current_snapshot,
                 process,
@@ -1473,6 +1547,9 @@ class GuardianService:
                 trade,
                 schedule,
                 manual=True,
+                initiator=initiator,
+                remote_channel=remote_channel,
+                remote_request_id=remote_request_id,
             )
             # A manual restart runs outside the service loop.  Wake the loop
             # immediately so verification is not delayed by the idle-period
@@ -1633,11 +1710,20 @@ class GuardianService:
             event_id=operation_id,
         )
 
-    def operator_check(self, source: str = "all") -> ServiceStatus:
+    def operator_check(
+        self,
+        source: str = "all",
+        *,
+        initiator: str = "manual",
+        remote_channel: str = "",
+        remote_request_id: str = "",
+    ) -> ServiceStatus:
         """Run and audit an operator-requested read-only health check."""
 
         if source not in {"all", "qmt", "trade"}:
             raise ValueError(f"unsupported check source: {source}")
+        if initiator not in {"manual", "remote_telegram", "remote_weixin"}:
+            raise ValueError("unsupported check initiator")
         started_at = datetime.now().astimezone()
         operation_id = self._new_identifier("QGO", started_at)
         target = (
@@ -1650,11 +1736,15 @@ class GuardianService:
         operation = {
             "operation_id": operation_id,
             "operation_type": "manual_check",
-            "initiator": "manual",
+            "initiator": initiator,
             "target_component": target,
             "context": "production",
             "started_at": started_at,
         }
+        if remote_channel:
+            operation["remote_channel"] = remote_channel
+        if remote_request_id:
+            operation["remote_request_id"] = remote_request_id
         self.audit.record(
             "manual_check_requested",
             {

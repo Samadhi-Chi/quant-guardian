@@ -533,6 +533,41 @@ class ServiceTests(unittest.TestCase):
             finally:
                 service.stop()
 
+    def test_remote_restart_rechecks_network_and_rocket_at_service_boundary(self) -> None:
+        for network, rocket, expected in (
+            (False, False, "network is unavailable"),
+            (True, True, "Rocket is active"),
+        ):
+            with self.subTest(network=network, rocket=rocket), tempfile.TemporaryDirectory() as directory, patch.dict(
+                os.environ, {"LOCALAPPDATA": directory}
+            ):
+                config = self.make_config()
+                recovery = FakeRecovery()
+                service = GuardianService(
+                    config,
+                    process_monitor=FakeProcessMonitor(),
+                    log_monitor=FakeLogMonitor(),
+                    network_monitor=FakeNetworkMonitor(network),
+                    rocket_monitor=FakeRocketMonitor(rocket),
+                    probe=FakeProbe(),
+                    recovery=recovery,
+                    audit=AuditLogger(Path(directory) / "logs"),
+                    safety_gate=SafetyGate(config, Path(directory) / "sentinel"),
+                    now=BASE,
+                )
+                try:
+                    service.run_once(BASE + timedelta(seconds=1))
+                    with self.assertRaisesRegex(PermissionError, expected):
+                        service.manual_restart(
+                            operator_confirmed=True,
+                            initiator="remote_telegram",
+                            remote_channel="telegram",
+                            remote_request_id="QGR-TEST",
+                        )
+                    self.assertEqual(recovery.manual_calls, 0)
+                finally:
+                    service.stop()
+
     def test_operator_check_is_recorded_as_a_completed_read_only_operation(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             os.environ, {"LOCALAPPDATA": directory}

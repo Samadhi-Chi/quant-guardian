@@ -2,6 +2,25 @@
 
 All notable changes are documented here. Versions follow semantic versioning; pre-release identifiers use the corresponding Python package form internally.
 
+## [0.4.0-beta.1] - 2026-08-19
+
+Messaging gateway preview.
+
+### Added
+
+- Separate `Quant Guardian Gateway.exe` process for Telegram Bot API and personal WeChat iLink text messaging.
+- Durable message outbox, delivery statistics, channel health and remote-command audit views.
+- Private-chat pairing, fixed read-only commands, Telegram button confirmation and WeChat one-time text confirmation.
+- Independently authorized QMT-only remote controlled restart with fresh network, Rocket, login and recovery-lock checks.
+- Settings pages for channels, broadcast rules, remote control and security audit.
+
+### Security
+
+- DPAPI-protected channel credentials and HMAC-authenticated local IPC.
+- One private owner per channel; group control, arbitrary commands, trading actions and all Quantclass engine control remain unavailable.
+- Nonce, expiry, idempotency, rate limits, durable confirmation challenges and message/path redaction.
+- Trusted HTTPS endpoint restriction for personal WeChat iLink credentials.
+
 ## [0.3.0-beta.1] - 2026-08-15
 
 First public preview.
@@ -24,3 +43,4 @@ First public preview.
 - Release content allow/deny validation and automated security scanning.
 
 [0.3.0-beta.1]: https://github.com/Samadhi-Chi/quant-guardian/releases/tag/v0.3.0-beta.1
+[0.4.0-beta.1]: https://github.com/Samadhi-Chi/quant-guardian/releases/tag/v0.4.0-beta.1

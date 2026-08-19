@@ -12,6 +12,12 @@ CRITICAL_MINIMUMS = {
     "src/quant_guardian/security/dpapi.py": 80.0,
     "src/quant_guardian/diagnostics/redaction.py": 80.0,
     "src/quant_guardian/diagnostics/exporter.py": 80.0,
+    "src/quant_guardian/gateway/channels/https.py": 80.0,
+    "src/quant_guardian/gateway/commands.py": 80.0,
+    "src/quant_guardian/gateway/config.py": 80.0,
+    "src/quant_guardian/gateway/ipc.py": 80.0,
+    "src/quant_guardian/gateway/secrets.py": 80.0,
+    "src/quant_guardian/gateway/store.py": 80.0,
 }
 
 

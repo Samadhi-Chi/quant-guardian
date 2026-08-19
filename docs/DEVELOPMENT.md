@@ -21,6 +21,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-install-s
 
 Tests must cover PID reuse, path mismatch, recovery authorization, QMT-only automatic behavior, diagnostic privacy and release ZIP contents.
 
+The per-module 80% gate also applies to the Gateway HTTPS transport, fixed-command router, configuration validator, authenticated IPC broker, DPAPI credential vault, and durable audit store.
+
 ## Simulated UI screenshots
 
 ~~~powershell
@@ -33,7 +35,7 @@ Only synthetic data from PreviewService may be committed. Do not capture a live 
 
 ~~~powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package-release.ps1 -Version 0.3.0b1 -ReleaseTag v0.3.0-beta.1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package-release.ps1 -Version 0.4.0b1 -ReleaseTag v0.4.0-beta.1
 ~~~
 
 The package script verifies the tag/package mapping, license inventory, forbidden content and SHA-256. It creates the Windows ZIP, CycloneDX SBOM and checksum file under release-assets.
@@ -43,6 +45,7 @@ The package script verifies the tag/package mapping, license inventory, forbidde
 Use a clean isolated directory. Validate:
 
 - Quant Guardian.exe --version;
+- Quant Guardian Gateway.exe --version;
 - --simulate;
 - --ui-smoke;
 - installer marker and uninstaller WhatIf/rollback;

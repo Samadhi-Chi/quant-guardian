@@ -17,6 +17,8 @@ LICENSES = {
     "PySide6-Essentials": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
     "shiboken6": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
     "psutil": "BSD-3-Clause",
+    "qrcode": "BSD-3-Clause",
+    "colorama": "BSD-3-Clause",
     "tzdata": "Apache-2.0",
 }
 RUNTIME_PACKAGES = (
@@ -25,6 +27,8 @@ RUNTIME_PACKAGES = (
     "PySide6-Essentials",
     "shiboken6",
     "psutil",
+    "qrcode",
+    "colorama",
     "tzdata",
 )
 

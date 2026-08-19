@@ -1,14 +1,14 @@
 # Quant Guardian
 
-> A safety-first Windows monitor for QMT and Quantclass environments, with controlled **QMT-only** recovery.
+> A safety-first Windows monitor for QMT and Quantclass environments, with controlled **QMT-only** recovery and optional private messaging.
 
-Quant Guardian 是一个独立的 Windows 桌面监控工具，用于观察 QMT API、XTQuant 只读链路与 Quantclass 交易系统内核。它在严格的连续故障证据和安全闸门同时成立时，只对 QMT 执行受控恢复。
+Quant Guardian 是一个独立的 Windows 桌面监控工具，用于观察 QMT API、XTQuant 只读链路与 Quantclass 交易系统内核。它在严格的连续故障证据和安全闸门同时成立时，只对 QMT 执行受控恢复。可选的独立 Gateway 可通过 Telegram 或个人微信 iLink 私聊播报，并接受有限、可审计的固定命令。
 
 [![CI](https://github.com/Samadhi-Chi/quant-guardian/actions/workflows/ci.yml/badge.svg)](https://github.com/Samadhi-Chi/quant-guardian/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/Samadhi-Chi/quant-guardian/actions/workflows/codeql.yml/badge.svg)](https://github.com/Samadhi-Chi/quant-guardian/actions/workflows/codeql.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-> **公开预览版提示：** v0.3.0-beta.1 尚未进行代码签名，Windows SmartScreen 可能提示未知发布者。应用默认处于观察模式；在实盘环境启用自动恢复前，必须完成本机验证并理解风险。
+> **公开预览版提示：** v0.4.0-beta.1 尚未进行代码签名，Windows SmartScreen 可能提示未知发布者。应用、消息 Gateway 与远程控制均采用保守默认值；在实盘环境启用任何恢复能力前，必须完成本机验证并理解风险。
 
 ## 界面预览
 
@@ -30,15 +30,21 @@ Quant Guardian 是一个独立的 Windows 桌面监控工具，用于观察 QMT 
 
 *模拟数据，不含真实账户信息。*
 
+### 设置：Telegram 与个人微信私聊
+
+![Quant Guardian 消息通道设置页，模拟数据，不含真实账户信息](docs/assets/screenshots/settings-messaging.png)
+
+*模拟数据，不含真实 Token、用户 ID 或账户信息。*
+
 ## 下载
 
 从 [GitHub Releases](https://github.com/Samadhi-Chi/quant-guardian/releases) 下载最新的 Windows x64 预览版：
 
-- Quant-Guardian-v0.3.0-beta.1-windows-x64.zip
-- Quant-Guardian-v0.3.0-beta.1-SHA256SUMS.txt
-- Quant-Guardian-v0.3.0-beta.1-SBOM.cdx.json
+- Quant-Guardian-v0.4.0-beta.1-windows-x64.zip
+- Quant-Guardian-v0.4.0-beta.1-SHA256SUMS.txt
+- Quant-Guardian-v0.4.0-beta.1-SBOM.cdx.json
 
-下载后先核对 SHA-256，再解压到普通用户目录。ZIP 是可移植 one-folder 包，不包含 QMT、XTQuant、Quantclass、真实配置、日志或监控数据库。
+下载后先核对 SHA-256，再解压到普通用户目录。ZIP 是可移植 one-folder 包，包含 `Quant Guardian.exe` 与隔离的 `Quant Guardian Gateway.exe`，但不包含 QMT、XTQuant、Quantclass、真实配置、凭据、日志或监控数据库。
 
 ## 能力与边界
 
@@ -51,6 +57,15 @@ Quant Guardian 是一个独立的 Windows 桌面监控工具，用于观察 QMT 
 
 Quant Guardian 不是交易策略，不会生成交易计划，不会下单或撤单。Aqua 与 Zeus 是可切换的选股内核；Rocket 是唯一的下单内核。自动恢复永远不会启动、停止或修复 Quantclass、Fuel、Aqua、Zeus 或 Rocket。
 
+### 消息与远程操作
+
+| 通道 | 连接方式 | 可用范围 |
+|---|---|---|
+| Telegram | 官方 Bot API 长轮询 | 私聊播报、状态、检测、故障、操作记录、二次确认后的 QMT 重启 |
+| 个人微信 | 微信 iLink Bot 二维码登录与长轮询 | 私聊文本播报、同一组固定命令、一次性文字确认后的 QMT 重启 |
+
+Gateway 不包含 LLM、Agent、Shell、文件访问或自由文本执行器。每个通道只允许一个已配对的私聊；群聊在配置、适配器和命令层均禁用。远程端永远不能控制 Quantclass、Fuel、Aqua、Zeus 或 Rocket，也不能触发下单或撤单。
+
 ## 快速开始
 
 ### 使用 Release
@@ -59,11 +74,20 @@ Quant Guardian 不是交易策略，不会生成交易计划，不会下单或�
 2. 在 PowerShell 中校验：
 
 ~~~powershell
-Get-FileHash .\Quant-Guardian-v0.3.0-beta.1-windows-x64.zip -Algorithm SHA256
+Get-FileHash .\Quant-Guardian-v0.4.0-beta.1-windows-x64.zip -Algorithm SHA256
 ~~~
 
 3. 解压后直接运行 Quant Guardian\Quant Guardian.exe，或使用包内加固后的 scripts\install-app.ps1 安装到当前用户目录。
 4. 在设置页填写本机 QMT 与 Quantclass 路径；保持观察模式运行至少一个完整交易日。
+
+### 配置消息通道
+
+1. 打开“设置 → 消息通道”。Telegram 使用 BotFather Token；个人微信使用应用内二维码登录 iLink Bot。
+2. 生成一次性配对码，并在要绑定的个人私聊中发送。首个正确使用该码的私聊成为唯一授权会话。
+3. 先只启用播报和只读命令，验证“状态 / 检测 / 故障 / 操作”。
+4. 如确需远程重启 QMT，再分别启用“远程控制”配置和本机 `REMOTE_CONTROL_ENABLED` 授权；该授权与自动恢复授权互不替代。
+
+个人微信功能不要求安装 Hermes Agent。它是 Quant Guardian 内置的最小文本适配器，独立适配了 Hermes Agent MIT 许可的 iLink 协议结构并保留归属。扫码连接的是 iLink Bot 身份，不是可任意操控的普通微信客户端；实际可用性受微信服务与账号状态影响。
 
 ### 从源码运行
 
@@ -99,6 +123,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1 
 - 恢复前再次核验 PID、进程创建时间和可执行文件路径；PID 复用、路径不匹配或同名进程均不得终止。
 - Rocket 活跃时默认阻止自动 QMT 恢复。
 - 人工重启必须由操作员点击确认；它不绕过进程身份和并发锁保护。
+- 远程 QMT 重启还要求绑定私聊、短时一次性确认、DPAPI 凭据、本机独立授权、网络可用、Rocket 未运行且 QMT 不要求人工登录。
+- Gateway 只能通过带 HMAC 认证的本机 IPC 请求 Guardian 执行固定动作，不能直接枚举或终止进程。
 - 诊断导出会遮蔽账户、token、用户名和 QMT/Quantclass 本机根路径。
 
 完整设计见 [安全模型](docs/SAFETY_MODEL.md)。安全问题请按 [SECURITY.md](SECURITY.md) 私下报告，不要提交包含真实账户或日志的公开 Issue。
@@ -108,6 +134,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1 
 Quant Guardian 是独立、非官方的兼容工具，与量化小讲堂/Quantclass、迅投/QMT、任何券商均不存在隶属、合作或背书关系。
 
 本项目不包含、不复制、不修改、也不再分发 Quantclass Client Pro、QMT 或 XTQuant。用户必须自行取得这些软件，并遵守各自许可与服务条款。
+
+个人微信适配器参考了 [Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent) 的 MIT 许可 Weixin iLink 适配器协议结构；Quant Guardian 不包含或运行 Hermes Agent，也不带入其 Agent、模型、Shell、媒体或其他通道能力。完整归属见 [第三方声明](THIRD-PARTY-NOTICES.md)。
 
 [Quantclass Client Pro](https://github.com/qtcls/quantclass-client-pro) 当前采用 BUSL-1.1，是 **source-available（源码可见）** 项目，并明确声明当前不是 Open Source；其许可在 2028-08-22 前不提供生产使用授权。该项目及许可证不属于 Quant Guardian 的 Apache-2.0 授权范围。
 

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "0.3.0b1",
-    [string]$ReleaseTag = "v0.3.0-beta.1",
+    [string]$Version = "0.4.0b1",
+    [string]$ReleaseTag = "v0.4.0-beta.1",
     [string]$Python = "",
     [switch]$SkipBuild
 )
@@ -40,8 +40,12 @@ try {
 
     $BuiltApplication = Join-Path $ProjectRoot "dist\Quant Guardian"
     $BuiltExecutable = Join-Path $BuiltApplication "Quant Guardian.exe"
+    $BuiltGatewayExecutable = Join-Path $BuiltApplication "Quant Guardian Gateway.exe"
     if (-not (Test-Path -LiteralPath $BuiltExecutable -PathType Leaf)) {
         throw "Built application not found: $BuiltExecutable"
+    }
+    if (-not (Test-Path -LiteralPath $BuiltGatewayExecutable -PathType Leaf)) {
+        throw "Built gateway application not found: $BuiltGatewayExecutable"
     }
 
     $AssetStem = "Quant-Guardian-$ReleaseTag"

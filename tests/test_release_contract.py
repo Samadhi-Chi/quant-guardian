@@ -9,14 +9,17 @@ from pathlib import Path
 from quant_guardian import __version__
 from scripts.check_sarif import actionable_results
 from scripts.check_version import release_tag, validate_project_metadata
+from scripts.generate_sbom import build_sbom
 from scripts.validate_release import REQUIRED_SUFFIXES, validate_zip
+
+SYNTHETIC_TELEGRAM_TOKEN = ("123456789:" + "AAA" + ("b" * 32)).encode()
 
 
 class ReleaseContractTests(unittest.TestCase):
     def test_version_has_single_source_and_matches_public_tag(self) -> None:
         validate_project_metadata()
-        self.assertEqual(__version__, "0.3.0b1")
-        self.assertEqual(release_tag(__version__), "v0.3.0-beta.1")
+        self.assertEqual(__version__, "0.4.0b1")
+        self.assertEqual(release_tag(__version__), "v0.4.0-beta.1")
 
     def test_build_scripts_support_ci_python_without_repository_venv(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
@@ -56,7 +59,7 @@ class ReleaseContractTests(unittest.TestCase):
             )
 
     def make_zip(self, path: Path, *, extra: dict[str, bytes] | None = None) -> None:
-        prefix = "Quant-Guardian-v0.3.0-beta.1-windows-x64/"
+        prefix = "Quant-Guardian-v0.4.0-beta.1-windows-x64/"
         remaining = dict(extra or {})
         with zipfile.ZipFile(path, "w") as archive:
             for name in REQUIRED_SUFFIXES:
@@ -81,6 +84,8 @@ class ReleaseContractTests(unittest.TestCase):
             "Quant Guardian/quantclass.exe": b"external",
             "runtime/config/quant-guardian.json": b"{}",
             "external/xtquant/__init__.py": b"external",
+            "runtime/config/messaging.json": b"{}",
+            "runtime/secrets/messaging-secrets.json": b"{}",
         }
         with tempfile.TemporaryDirectory() as directory:
             for index, (name, content) in enumerate(cases.items()):
@@ -88,6 +93,48 @@ class ReleaseContractTests(unittest.TestCase):
                 self.make_zip(path, extra={name: content})
                 with self.assertRaises(ValueError, msg=name):
                     validate_zip(path)
+
+    def test_release_validator_rejects_telegram_bot_token(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "release.zip"
+            self.make_zip(
+                path,
+                extra={"INSTALLATION.md": SYNTHETIC_TELEGRAM_TOKEN},
+            )
+            with self.assertRaisesRegex(ValueError, "Telegram bot token"):
+                validate_zip(path)
+
+    def test_release_validator_ignores_token_shaped_random_binary_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "release.zip"
+            self.make_zip(
+                path,
+                extra={
+                    "Quant Guardian/_internal/PySide6/Qt6Pdf.dll": (
+                        b"binary\x00" + SYNTHETIC_TELEGRAM_TOKEN
+                    )
+                },
+            )
+            validate_zip(path)
+
+    def test_release_validator_scans_packaged_python_source_for_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "release.zip"
+            self.make_zip(
+                path,
+                extra={
+                    "Quant Guardian/probe_runtime/example.py": (
+                        b"TOKEN = '" + SYNTHETIC_TELEGRAM_TOKEN + b"'"
+                    )
+                },
+            )
+            with self.assertRaisesRegex(ValueError, "Telegram bot token"):
+                validate_zip(path)
+
+    def test_sbom_lists_gateway_runtime_dependencies(self) -> None:
+        components = {item["name"]: item for item in build_sbom()["components"]}
+        self.assertEqual(components["qrcode"]["licenses"][0]["expression"], "BSD-3-Clause")
+        self.assertIn("colorama", components)
 
     def test_release_validator_rejects_windows_user_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
