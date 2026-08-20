@@ -36,6 +36,18 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn("[string]$Python", package_script)
         self.assertIn("-Python (Get-Command python -CommandType Application).Source", workflow)
 
+    def test_gitleaks_pr_scan_uses_read_only_token_without_comments(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        workflow = (project_root / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("pull-requests: read", workflow)
+        self.assertIn(
+            "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+            workflow,
+        )
+        self.assertIn('GITLEAKS_ENABLE_COMMENTS: "false"', workflow)
+
     def test_sarif_gate_accepts_empty_results_and_rejects_finding(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "codeql.sarif"
