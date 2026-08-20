@@ -95,6 +95,7 @@ def _run_desktop(
         config,
         args.config,
         start_monitoring=not args.ui_smoke,
+        start_gateway=not args.ui_smoke,
         auto_quit_ms=800 if args.ui_smoke else None,
         show_onboarding=first_run and not args.ui_smoke,
         runtime_root=runtime_root,

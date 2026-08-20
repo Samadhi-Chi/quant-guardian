@@ -257,6 +257,148 @@ class TradeSystemMonitorTests(unittest.TestCase):
             self.assertTrue(stalled.data.metrics["stalled_products"])
             self.assertIn("超过确认窗口", stalled.data.reason)
 
+    def test_scheduled_fuel_pause_uses_fresh_minute_data_as_health_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            now = datetime.now().astimezone().replace(microsecond=0)
+            (root / "fuel" / "log").mkdir(parents=True)
+            status_path = root / "fuel" / "status.json"
+            status_path.write_text(
+                json.dumps(
+                    {
+                        "stock-price": {
+                            "isListed": 1,
+                            "canAutoUpdate": 1,
+                            "lastUpdateTime": (now - timedelta(minutes=40)).strftime(
+                                "%Y-%m-%d %H:%M:%S"
+                            ),
+                            "nextUpdateTime": (now - timedelta(minutes=30)).strftime(
+                                "%Y-%m-%d %H:%M:%S"
+                            ),
+                            "lastErrTime": None,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            old_timestamp = (now - timedelta(minutes=30)).timestamp()
+            os.utime(status_path, (old_timestamp, old_timestamp))
+            (root / "fuel" / "update.json").write_text("{}", encoding="utf-8")
+            log_path = root / "fuel" / "log" / f"{now:%Y-%m-%d}_日志.log"
+            log_path.write_text(
+                f"INFO:root:{now - timedelta(minutes=6):%H:%M:%S} --> "
+                "[command in]: C:\\data\\fuel\\fuel.exe min_data\n"
+                f"INFO:root:{now - timedelta(minutes=5):%H:%M:%S} --> "
+                "[加速数据源] 本轮完成，成功 1/1 个 hm\n"
+                f"INFO:root:{now - timedelta(seconds=8):%H:%M:%S} --> "
+                "[command in]: C:\\data\\fuel\\fuel.exe all_data\n"
+                f"INFO:root:{now - timedelta(seconds=8):%H:%M:%S} --> "
+                "在交易时间，不再更新数据。如需更新，可手动增量更新。\n",
+                encoding="utf-8",
+            )
+            config = self.make_config(root)
+            config.fuel_log_directory = "fuel/log"
+            monitor = TradeSystemMonitor(config)
+            rocket = RocketObservation(False, False, "Rocket空闲")
+            with patch.object(TradeSystemMonitor, "_active_processes", return_value=[]):
+                paused = monitor.observe(now, rocket=rocket, active_window=False)
+                with log_path.open("a", encoding="utf-8") as stream:
+                    stream.write(
+                        f"INFO:root:{now + timedelta(minutes=1):%H:%M:%S} --> "
+                        "[command in]: C:\\data\\fuel\\fuel.exe all_data\n"
+                    )
+                resumed = monitor.observe(
+                    now + timedelta(minutes=1), rocket=rocket, active_window=False
+                )
+            self.assertEqual(paused.data.state, ComponentState.HEALTHY)
+            self.assertTrue(paused.data.metrics["full_update_paused"])
+            self.assertTrue(paused.data.metrics["min_data_fresh"])
+            self.assertTrue(paused.data.metrics["stalled_products"])
+            self.assertIn("分钟数据正常", paused.data.reason)
+            self.assertEqual(resumed.data.state, ComponentState.WARNING)
+            self.assertFalse(resumed.data.metrics["full_update_paused"])
+
+    def test_scheduled_fuel_pause_warns_when_minute_data_heartbeat_is_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            now = datetime.now().astimezone().replace(microsecond=0)
+            self.write_fuel(root, now)
+            (root / "fuel" / "log").mkdir()
+            (root / "fuel" / "log" / f"{now:%Y-%m-%d}_日志.log").write_text(
+                f"INFO:root:{now - timedelta(minutes=20):%H:%M:%S} --> "
+                "[command in]: C:\\data\\fuel\\fuel.exe min_data\n"
+                f"INFO:root:{now - timedelta(minutes=19):%H:%M:%S} --> "
+                "[加速数据源] 本轮完成，成功 1/1 个 hm\n"
+                f"INFO:root:{now - timedelta(seconds=5):%H:%M:%S} --> "
+                "[command in]: C:\\data\\fuel\\fuel.exe all_data\n"
+                f"INFO:root:{now - timedelta(seconds=5):%H:%M:%S} --> "
+                "在交易时间，不再更新数据。\n",
+                encoding="utf-8",
+            )
+            config = self.make_config(root)
+            config.fuel_log_directory = "fuel/log"
+            with patch.object(TradeSystemMonitor, "_active_processes", return_value=[]):
+                observation = TradeSystemMonitor(config).observe(
+                    now,
+                    rocket=RocketObservation(False, False, "Rocket空闲"),
+                    active_window=False,
+                )
+            self.assertEqual(observation.data.state, ComponentState.WARNING)
+            self.assertTrue(observation.data.metrics["full_update_paused"])
+            self.assertFalse(observation.data.metrics["min_data_fresh"])
+            self.assertIn("分钟数据心跳已过期", observation.data.reason)
+
+    def test_long_running_minute_round_is_fresh_before_it_writes_success(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            now = datetime.now().astimezone().replace(microsecond=0)
+            self.write_fuel(root, now)
+            (root / "fuel" / "log").mkdir()
+            (root / "fuel" / "log" / f"{now:%Y-%m-%d}_日志.log").write_text(
+                f"INFO:root:{now - timedelta(minutes=20):%H:%M:%S} --> "
+                "[command in]: C:\\data\\fuel\\fuel.exe min_data\n"
+                f"INFO:root:{now - timedelta(minutes=19):%H:%M:%S} --> "
+                "[加速数据源] 本轮完成，成功 1/1 个 hm\n"
+                f"INFO:root:{now - timedelta(minutes=8):%H:%M:%S} --> "
+                "[command in]: C:\\data\\fuel\\fuel.exe min_data\n"
+                f"INFO:root:{now - timedelta(seconds=5):%H:%M:%S} --> "
+                "[command in]: C:\\data\\fuel\\fuel.exe all_data\n"
+                f"INFO:root:{now - timedelta(seconds=5):%H:%M:%S} --> "
+                "在交易时间，不再更新数据。\n",
+                encoding="utf-8",
+            )
+            config = self.make_config(root)
+            config.fuel_log_directory = "fuel/log"
+
+            def active_processes(names: list[str]) -> list[dict[str, object]]:
+                if "fuel.exe" in names:
+                    return [
+                        {
+                            "pid": 77,
+                            "name": "fuel.exe",
+                            "command": "min_data",
+                        }
+                    ]
+                return []
+
+            with patch.object(
+                TradeSystemMonitor,
+                "_active_processes",
+                side_effect=active_processes,
+            ):
+                observation = TradeSystemMonitor(config).observe(
+                    now,
+                    rocket=RocketObservation(False, False, "Rocket空闲"),
+                    active_window=False,
+                )
+            self.assertEqual(observation.data.state, ComponentState.HEALTHY)
+            self.assertTrue(observation.data.metrics["full_update_paused"])
+            self.assertFalse(observation.data.metrics["min_data_success_fresh"])
+            self.assertTrue(observation.data.metrics["min_data_scheduler_fresh"])
+            self.assertTrue(observation.data.metrics["min_data_running"])
+            self.assertTrue(observation.data.metrics["min_data_fresh"])
+            self.assertIn("分钟数据正在更新", observation.data.reason)
+
     def test_active_rocket_with_stale_business_heartbeat_is_warning(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

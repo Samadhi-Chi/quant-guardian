@@ -8,6 +8,14 @@ from quant_guardian.cli import main
 
 
 class CliTests(unittest.TestCase):
+    def test_ui_smoke_does_not_start_the_messaging_gateway(self) -> None:
+        with patch("quant_guardian.ui.app.run_gui", return_value=0) as run_gui:
+            self.assertEqual(main(["--ui-smoke"]), 0)
+
+        self.assertFalse(run_gui.call_args.kwargs["start_monitoring"])
+        self.assertFalse(run_gui.call_args.kwargs["start_gateway"])
+        self.assertEqual(run_gui.call_args.kwargs["auto_quit_ms"], 800)
+
     def test_ui_smoke_uses_a_temporary_runtime_and_removes_it_afterward(self) -> None:
         observed: dict[str, Path] = {}
 

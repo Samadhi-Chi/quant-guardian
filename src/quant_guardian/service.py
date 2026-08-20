@@ -246,7 +246,6 @@ class GuardianService:
         self._monitor_heartbeat_path = directories["state"] / "monitor-heartbeat.json"
         self._last_signature: tuple[object, ...] | None = None
         self._last_trade_signature: tuple[object, ...] | None = None
-        self._last_trade_event_at: datetime | None = None
         self._manual_after_recovery = False
         self._last_reconciliation: dict[str, object] = {}
         self._idle_failure_count = 0
@@ -593,35 +592,6 @@ class GuardianService:
 
     def _record_trade_system(self, observation: TradeSystemObservation) -> None:
         children = observation.node.children
-        signature = tuple(
-            (
-                child.id,
-                child.state.value,
-                child.metrics.get("selected"),
-                child.metrics.get("engine"),
-            )
-            for child in children
-        )
-        severity = (
-            "critical"
-            if observation.node.state is ComponentState.CRITICAL
-            else "warning"
-            if observation.node.state is ComponentState.WARNING
-            else "info"
-        )
-        same_state = signature == self._last_trade_signature
-        reminder_due = bool(
-            severity in {"critical", "warning"}
-            and self._last_trade_event_at is not None
-            and (
-                observation.node.observed_at - self._last_trade_event_at
-            ).total_seconds()
-            >= 15 * 60
-        )
-        if same_state and not reminder_due:
-            return
-        self._last_trade_signature = signature
-        self._last_trade_event_at = observation.node.observed_at
         flattened = [*children]
         for child in children:
             flattened.extend(child.children)
@@ -631,6 +601,27 @@ class GuardianService:
             if child.state in {ComponentState.CRITICAL, ComponentState.WARNING}
             and child.metrics.get("selected") is not False
         ]
+        signature = tuple(
+            sorted(
+                (
+                    child.id,
+                    child.state.value,
+                    str(child.metrics.get("condition") or child.reason),
+                )
+                for child in actionable
+            )
+        )
+        previous_signature = self._last_trade_signature
+        if signature == previous_signature:
+            return
+        self._last_trade_signature = signature
+        severity = (
+            "critical"
+            if any(child.state is ComponentState.CRITICAL for child in actionable)
+            else "warning"
+            if actionable
+            else "info"
+        )
         culprit = max(
             actionable,
             key=lambda child: (
@@ -660,11 +651,22 @@ class GuardianService:
             moment=observation.node.observed_at,
         )
         if severity in {"critical", "warning"}:
+            issue_code = str(culprit.metrics.get("condition") or culprit.id)
             self.notifications.publish(
                 "Trade System需要处理",
                 summary,
                 severity=severity,
-                event_key=f"trade_system:{culprit.id}:{culprit.state.value}",
+                event_key=(
+                    f"trade_system:{culprit.id}:{culprit.state.value}:{issue_code}"
+                ),
+                now=observation.node.observed_at,
+            )
+        elif previous_signature:
+            self.notifications.publish(
+                "Trade System已恢复",
+                observation.node.reason,
+                severity="info",
+                event_key="trade_system:recovered",
                 now=observation.node.observed_at,
             )
 

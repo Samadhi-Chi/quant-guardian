@@ -107,6 +107,55 @@ class CriticalTradeMonitor:
         return TradeSystemObservation(parent, data, selection, order)
 
 
+class FlappingFuelWarningMonitor:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.recovered = False
+
+    def observe(self, now, *, rocket, active_window):
+        del rocket, active_window
+        self.calls += 1
+        data = ComponentNode(
+            "trade_system.data",
+            "数据内核",
+            ComponentState.HEALTHY if self.recovered else ComponentState.WARNING,
+            "Fuel正常" if self.recovered else "Fuel更新进度停滞，39项数据已超过确认窗口",
+            now,
+            metrics={
+                "engine": "Fuel",
+                "condition": "fuel_healthy" if self.recovered else "fuel_stalled",
+            },
+        )
+        selection = ComponentNode(
+            "trade_system.selection",
+            "选股内核",
+            ComponentState.HEALTHY if self.calls % 2 else ComponentState.IDLE,
+            "Zeus任务正在运行" if self.calls % 2 else "Zeus当前空闲",
+            now,
+            metrics={"engine": "Zeus"},
+        )
+        order = ComponentNode(
+            "trade_system.order",
+            "下单内核",
+            ComponentState.HEALTHY,
+            "Rocket正常",
+            now,
+            metrics={"engine": "Rocket", "condition": "rocket_healthy"},
+        )
+        children = (data, selection, order)
+        parent = ComponentNode(
+            "trade_system",
+            "Trade System",
+            ComponentState.HEALTHY if self.recovered else ComponentState.WARNING,
+            "数据、选股与下单内核状态已汇总"
+            if self.recovered
+            else "数据、选股或下单链路需要处理",
+            now,
+            children=children,
+        )
+        return TradeSystemObservation(parent, data, selection, order)
+
+
 class TrackingBusinessProbe:
     def __init__(self) -> None:
         self.invalidated_at = None
@@ -811,6 +860,51 @@ class ServiceTests(unittest.TestCase):
                     if event["event_type"] == "trade_system_state"
                 )
                 self.assertIn("Zeus", trade_event["payload"]["summary"])
+            finally:
+                service.stop()
+
+    def test_trade_system_issue_notifies_once_despite_healthy_idle_flapping(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"LOCALAPPDATA": directory}
+        ):
+            config = self.make_config()
+            monitor = FlappingFuelWarningMonitor()
+            service = GuardianService(
+                config,
+                process_monitor=FakeProcessMonitor(),
+                log_monitor=FakeLogMonitor(),
+                network_monitor=FakeNetworkMonitor(),
+                rocket_monitor=FakeRocketMonitor(),
+                trade_system_monitor=monitor,
+                probe=FakeProbe(),
+                recovery=FakeRecovery(),
+                audit=AuditLogger(Path(directory) / "logs"),
+                safety_gate=SafetyGate(config, Path(directory) / "sentinel"),
+                now=BASE,
+            )
+            notifications = []
+            service.notifications.subscribe(notifications.append)
+            try:
+                service.run_once(BASE)
+                service.run_once(BASE + timedelta(minutes=11))
+                service.run_once(BASE + timedelta(minutes=22))
+                warnings = [
+                    item for item in notifications if item.title == "Trade System需要处理"
+                ]
+                self.assertEqual(len(warnings), 1)
+                trade_events = [
+                    event
+                    for event in service.audit.recent(50)
+                    if event["event_type"] == "trade_system_state"
+                ]
+                self.assertEqual(len(trade_events), 1)
+
+                monitor.recovered = True
+                service.run_once(BASE + timedelta(minutes=23))
+                recoveries = [
+                    item for item in notifications if item.title == "Trade System已恢复"
+                ]
+                self.assertEqual(len(recoveries), 1)
             finally:
                 service.stop()
 

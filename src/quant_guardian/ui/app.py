@@ -30,6 +30,7 @@ def run_gui(
     config_path: Path | None = None,
     *,
     start_monitoring: bool = True,
+    start_gateway: bool = True,
     auto_quit_ms: int | None = None,
     show_onboarding: bool = False,
     runtime_root: Path | None = None,
@@ -118,7 +119,11 @@ def run_gui(
             },
             severity="warning",
         )
-    if messaging_config.gateway_enabled and messaging_config.autostart:
+    if (
+        start_gateway
+        and messaging_config.gateway_enabled
+        and messaging_config.autostart
+    ):
         try:
             GatewaySupervisor(messaging_path).start()
         except OSError as exc:

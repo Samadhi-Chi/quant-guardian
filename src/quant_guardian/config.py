@@ -74,6 +74,8 @@ class TradeSystemConfig:
     locker_directory: str = r"real_trading\data\locker"
     data_overdue_grace_seconds: int = 900
     data_stall_confirmation_seconds: int = 300
+    fuel_pause_heartbeat_stale_seconds: int = 180
+    fuel_min_data_stale_seconds: int = 720
     rocket_expected_start: str = "09:00"
     rocket_startup_grace_seconds: int = 300
     task_log_tail_bytes: int = 262_144
@@ -221,6 +223,10 @@ class AppConfig:
             errors.append("rocket.business_heartbeat_stale_seconds must be >= 30")
         if self.trade_system.data_stall_confirmation_seconds < 0:
             errors.append("trade_system.data_stall_confirmation_seconds must be >= 0")
+        if self.trade_system.fuel_pause_heartbeat_stale_seconds < 60:
+            errors.append("trade_system.fuel_pause_heartbeat_stale_seconds must be >= 60")
+        if self.trade_system.fuel_min_data_stale_seconds < 60:
+            errors.append("trade_system.fuel_min_data_stale_seconds must be >= 60")
         if self.trade_system.rocket_startup_grace_seconds < 0:
             errors.append("trade_system.rocket_startup_grace_seconds must be >= 0")
         for label, value in (

@@ -40,6 +40,9 @@
     "rocket_log_directory": "real_trading\\rocket\\data\\系统日志",
     "locker_directory": "real_trading\\data\\locker",
     "data_overdue_grace_seconds": 900,
+    "data_stall_confirmation_seconds": 300,
+    "fuel_pause_heartbeat_stale_seconds": 180,
+    "fuel_min_data_stale_seconds": 720,
     "task_log_tail_bytes": 262144
   },
   "monitoring": {

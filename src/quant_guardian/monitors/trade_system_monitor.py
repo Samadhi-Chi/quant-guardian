@@ -20,6 +20,12 @@ from quant_guardian.monitors.rocket_monitor import RocketObservation
 _TIMESTAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:,\d+)?")
 _START = re.compile(r"\[(fuel|aqua|zeus|rocket)\].*\bpid\s+\d+\s+start", re.I)
 _EXIT = re.compile(r"\[(fuel|aqua|zeus|rocket)\].*\bpid\s+\d+\s+exit successfully", re.I)
+_FUEL_TIME = re.compile(r"^[A-Z]+:root:(\d{2}:\d{2}:\d{2})\s+-->")
+_FUEL_LOG_DATE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+_FUEL_MIN_SUCCESS = re.compile(r"本轮完成，成功\s+(\d+)/(\d+)")
+_FUEL_ALL_DATA_COMMAND = "fuel.exe all_data"
+_FUEL_MIN_DATA_COMMAND = "fuel.exe min_data"
+_FUEL_SCHEDULED_PAUSE = "在交易时间，不再更新数据"
 
 
 def _parse_timestamp(line: str) -> datetime | None:
@@ -126,6 +132,123 @@ class IncrementalTaskLog:
         return self.runtime
 
 
+@dataclass(slots=True)
+class _FuelLogRuntime:
+    path: Path | None = None
+    offset: int = 0
+    file_identity: tuple[int, int] | None = None
+    carry: str = ""
+    last_activity_at: datetime | None = None
+    last_all_data_started_at: datetime | None = None
+    last_scheduled_pause_at: datetime | None = None
+    last_min_data_started_at: datetime | None = None
+    last_min_data_success_at: datetime | None = None
+
+
+class IncrementalFuelLog:
+    """Read only the newest Fuel log tail and retain scheduling evidence."""
+
+    def __init__(self, directory: Path, *, tail_bytes: int = 262_144) -> None:
+        self.directory = directory
+        self.tail_bytes = max(16_384, tail_bytes)
+        self.runtime = _FuelLogRuntime()
+
+    def _latest_path(self) -> Path | None:
+        try:
+            candidates = [
+                path
+                for path in self.directory.iterdir()
+                if path.is_file() and path.suffix.casefold() == ".log"
+            ]
+        except OSError:
+            return None
+        if not candidates:
+            return None
+        try:
+            return max(candidates, key=lambda path: path.stat().st_mtime_ns)
+        except OSError:
+            return None
+
+    def _read_new_text(self) -> tuple[str, Path | None]:
+        path = self._latest_path()
+        if path is None:
+            return "", None
+        try:
+            stat = path.stat()
+        except OSError:
+            return "", path
+        identity = (int(getattr(stat, "st_ino", 0)), int(stat.st_ctime_ns))
+        rotated = (
+            self.runtime.path != path
+            or self.runtime.file_identity is None
+            or identity != self.runtime.file_identity
+            or stat.st_size < self.runtime.offset
+        )
+        start = max(0, stat.st_size - self.tail_bytes) if rotated else self.runtime.offset
+        try:
+            with path.open("rb") as stream:
+                stream.seek(start)
+                raw = stream.read(self.tail_bytes)
+                offset = stream.tell()
+        except OSError:
+            return "", path
+        if rotated:
+            self.runtime.carry = ""
+            if start:
+                newline = raw.find(b"\n")
+                raw = raw[newline + 1 :] if newline >= 0 else b""
+        self.runtime.path = path
+        self.runtime.file_identity = identity
+        self.runtime.offset = offset
+        return raw.decode("utf-8-sig", errors="replace"), path
+
+    @staticmethod
+    def _line_time(path: Path, line: str) -> datetime | None:
+        time_match = _FUEL_TIME.match(line)
+        if not time_match:
+            return None
+        date_match = _FUEL_LOG_DATE.search(path.name)
+        try:
+            day = (
+                date_match.group(1)
+                if date_match
+                else datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d")
+            )
+            return datetime.strptime(
+                f"{day} {time_match.group(1)}", "%Y-%m-%d %H:%M:%S"
+            ).astimezone()
+        except (OSError, ValueError):
+            return None
+
+    def observe(self) -> _FuelLogRuntime:
+        text, path = self._read_new_text()
+        if not text or path is None:
+            return self.runtime
+        combined = self.runtime.carry + text
+        lines = combined.splitlines(keepends=True)
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            self.runtime.carry = lines.pop()
+        else:
+            self.runtime.carry = ""
+        for raw in lines:
+            line = raw.rstrip("\r\n")
+            at = self._line_time(path, line)
+            if at is None:
+                continue
+            self.runtime.last_activity_at = at
+            lowered = line.casefold()
+            if _FUEL_ALL_DATA_COMMAND in lowered:
+                self.runtime.last_all_data_started_at = at
+            elif _FUEL_MIN_DATA_COMMAND in lowered:
+                self.runtime.last_min_data_started_at = at
+            if _FUEL_SCHEDULED_PAUSE in line:
+                self.runtime.last_scheduled_pause_at = at
+            success = _FUEL_MIN_SUCCESS.search(line)
+            if success and int(success.group(1)) > 0 and success.group(1) == success.group(2):
+                self.runtime.last_min_data_success_at = at
+        return self.runtime
+
+
 @dataclass(frozen=True, slots=True)
 class TradeSystemObservation:
     node: ComponentNode
@@ -147,6 +270,10 @@ class TradeSystemMonitor:
         )
         self._zeus_log = IncrementalTaskLog(
             self._resolve(config.zeus_log_file),
+            tail_bytes=config.task_log_tail_bytes,
+        )
+        self._fuel_log = IncrementalFuelLog(
+            self._resolve(config.fuel_log_directory),
             tail_bytes=config.task_log_tail_bytes,
         )
 
@@ -227,6 +354,7 @@ class TradeSystemMonitor:
         status_path = self._resolve(self.config.fuel_status_file)
         update_path = self._resolve(self.config.fuel_update_file)
         active, all_fuel = self._active_fuel_updates()
+        fuel_log = self._fuel_log.observe()
         products = self._read_json(status_path)
         if products is not None:
             self._last_products = products
@@ -313,35 +441,125 @@ class TradeSystemMonitor:
                 self.config.data_stall_confirmation_seconds,
             )
         )
+        scheduled_pause_age_seconds = (
+            max(0, int((now - fuel_log.last_scheduled_pause_at).total_seconds()))
+            if fuel_log.last_scheduled_pause_at
+            else None
+        )
+        full_update_paused = bool(
+            fuel_log.last_scheduled_pause_at
+            and fuel_log.last_all_data_started_at
+            and fuel_log.last_scheduled_pause_at >= fuel_log.last_all_data_started_at
+            and scheduled_pause_age_seconds is not None
+            and scheduled_pause_age_seconds
+            <= self.config.fuel_pause_heartbeat_stale_seconds
+        )
+        min_data_age_seconds = (
+            max(0, int((now - fuel_log.last_min_data_success_at).total_seconds()))
+            if fuel_log.last_min_data_success_at
+            else None
+        )
+        min_data_success_fresh = bool(
+            min_data_age_seconds is not None
+            and min_data_age_seconds <= self.config.fuel_min_data_stale_seconds
+        )
+        min_data_start_age_seconds = (
+            max(0, int((now - fuel_log.last_min_data_started_at).total_seconds()))
+            if fuel_log.last_min_data_started_at
+            else None
+        )
+        min_data_scheduler_fresh = bool(
+            min_data_start_age_seconds is not None
+            and min_data_start_age_seconds
+            <= self.config.fuel_min_data_stale_seconds
+        )
+        min_data_processes = [
+            value
+            for value in all_fuel
+            if str(value.get("command") or "").casefold() == "min_data"
+        ]
+        min_data_in_progress = bool(
+            min_data_processes
+            or (
+                fuel_log.last_min_data_started_at
+                and (
+                    fuel_log.last_min_data_success_at is None
+                    or fuel_log.last_min_data_started_at
+                    > fuel_log.last_min_data_success_at
+                )
+                and now - fuel_log.last_min_data_started_at <= timedelta(minutes=3)
+            )
+        )
+        # Fuel launches min_data on a schedule.  A round may legitimately take
+        # several minutes, and overlapping launches then exit with "round is
+        # already running" without another successful-write summary.  Treat the
+        # scheduled launch and the exact min_data process as heartbeat evidence;
+        # otherwise an active round is falsely reported as stale merely because
+        # it has not finished writing yet.
+        min_data_fresh = bool(
+            min_data_success_fresh
+            or min_data_scheduler_fresh
+            or min_data_processes
+        )
+        min_data_expected = bool(
+            fuel_log.last_min_data_started_at or min_data_processes
+        )
         state = (
             ComponentState.CRITICAL
             if errors
             else ComponentState.WARNING
-            if stale or (stalled_products and not progress_fresh)
+            if stale
+            or (
+                full_update_paused
+                and min_data_expected
+                and not min_data_fresh
+                and not min_data_in_progress
+            )
+            or (not full_update_paused and stalled_products and not progress_fresh)
             else ComponentState.HEALTHY
         )
         if errors:
             reason = f"{len(errors)}项数据产品最近一次更新失败"
+            condition = "fuel_product_error"
+        elif stale:
+            reason = "数据状态超过36小时未刷新"
+            condition = "fuel_status_stale"
+        elif full_update_paused and min_data_in_progress:
+            reason = "盘中分钟数据正在更新，全量更新按计划暂停"
+            condition = "fuel_scheduled_pause_minute_running"
+        elif full_update_paused and min_data_fresh:
+            reason = "盘中分钟数据正常，全量更新按计划暂停"
+            condition = "fuel_scheduled_pause_minute_healthy"
+        elif full_update_paused and min_data_expected:
+            reason = "盘中分钟数据心跳已过期，全量更新仍处于计划暂停"
+            condition = "fuel_min_data_stale"
+        elif full_update_paused:
+            reason = "盘中全量更新按计划暂停"
+            condition = "fuel_scheduled_pause"
         elif overdue_products and progress_fresh:
             reason = f"Fuel正在追赶更新，{len(overdue_products)}项数据待处理"
+            condition = "fuel_catching_up"
         elif overdue_products and not stalled_products:
             reason = f"{len(overdue_products)}项数据已到更新时间，正在等待更新确认"
+            condition = "fuel_awaiting_confirmation"
         elif stalled_products:
             reason = (
                 f"Fuel更新进度停滞，{len(stalled_products)}项数据"
                 "已超过确认窗口"
             )
+            condition = "fuel_stalled"
         elif active:
             reason = f"Fuel正在执行全量更新，已跟踪{enabled}项数据产品"
+            condition = "fuel_full_update_running"
         elif all_fuel:
             commands = sorted(
                 {str(value.get("command") or "unknown") for value in all_fuel}
             )
             reason = f"Fuel正在执行其他任务（{', '.join(commands)}），数据状态正常"
-        elif stale:
-            reason = "数据状态超过36小时未刷新"
+            condition = "fuel_other_task_running"
         else:
             reason = f"最近一次数据状态正常，共{enabled}项产品"
+            condition = "fuel_healthy"
         return ComponentNode(
             id="trade_system.data",
             name="数据内核",
@@ -351,6 +569,7 @@ class TradeSystemMonitor:
             priority="high",
             metrics={
                 "engine": "Fuel",
+                "condition": condition,
                 "active_processes": active,
                 "all_fuel_processes": all_fuel,
                 "products": enabled,
@@ -362,6 +581,27 @@ class TradeSystemMonitor:
                 "stalled_products": stalled_products[:8],
                 "progress_fresh": progress_fresh,
                 "progress_age_seconds": progress_age_seconds,
+                "full_update_paused": full_update_paused,
+                "scheduled_pause_age_seconds": scheduled_pause_age_seconds,
+                "min_data_expected": min_data_expected,
+                "min_data_fresh": min_data_fresh,
+                "min_data_success_fresh": min_data_success_fresh,
+                "min_data_scheduler_fresh": min_data_scheduler_fresh,
+                "min_data_running": bool(min_data_processes),
+                "min_data_processes": min_data_processes,
+                "min_data_age_seconds": min_data_age_seconds,
+                "min_data_start_age_seconds": min_data_start_age_seconds,
+                "min_data_last_started": (
+                    fuel_log.last_min_data_started_at.isoformat()
+                    if fuel_log.last_min_data_started_at
+                    else ""
+                ),
+                "min_data_last_success": (
+                    fuel_log.last_min_data_success_at.isoformat()
+                    if fuel_log.last_min_data_success_at
+                    else ""
+                ),
+                "fuel_log_file": str(fuel_log.path) if fuel_log.path else "",
                 "overdue_seconds": (
                     max(0, int((now - latest_next).total_seconds()))
                     if latest_next and now > latest_next
@@ -509,6 +749,17 @@ class TradeSystemMonitor:
             if active_window
             else "Rocket当前空闲，当前时段无需运行"
         )
+        rocket_condition = (
+            "rocket_error_burst"
+            if rocket.active and rocket.error_burst
+            else "rocket_healthy"
+            if rocket.active and rocket.business_healthy
+            else "rocket_business_unhealthy"
+            if rocket.active
+            else "rocket_missing_active_window"
+            if active_window
+            else "rocket_idle"
+        )
         order = ComponentNode(
             id="trade_system.order",
             name="下单内核",
@@ -518,6 +769,7 @@ class TradeSystemMonitor:
             priority="high",
             metrics={
                 "engine": "Rocket",
+                "condition": rocket_condition,
                 "active": rocket.active,
                 "error_burst": rocket.error_burst,
                 "log_age_seconds": rocket.log_age_seconds,
