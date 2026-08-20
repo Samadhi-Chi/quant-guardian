@@ -48,13 +48,25 @@ class FakeNetworkMonitor:
 class FakeRocketMonitor:
     active: bool = False
     error_burst: bool = False
+    business_healthy: bool | None = None
+    business_age_seconds: float | None = 0
+    business_health_known: bool = True
 
     def observe(self, now: datetime | None = None) -> RocketObservation:
+        business_healthy = (
+            self.active and not self.error_burst
+            if self.business_healthy is None
+            else self.business_healthy
+        )
         return RocketObservation(
             self.active,
             self.error_burst,
             "fake rocket observation",
             0,
+            business_healthy,
+            self.business_age_seconds,
+            "fake",
+            self.business_health_known,
         )
 
 

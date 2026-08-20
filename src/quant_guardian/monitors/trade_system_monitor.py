@@ -163,14 +163,48 @@ class TradeSystemMonitor:
         for process in psutil.process_iter(["pid", "name", "cmdline"]):
             try:
                 name = str(process.info.get("name") or "")
-                cmdline = " ".join(process.info.get("cmdline") or [])
+                raw_cmdline = [
+                    str(item) for item in (process.info.get("cmdline") or [])
+                ]
+                cmdline = " ".join(raw_cmdline)
             except (psutil.Error, OSError):
                 continue
             if name.casefold() in expected or any(
                 token in cmdline.casefold() for token in expected if token != "python.exe"
             ):
-                values.append({"pid": process.pid, "name": name or "unknown"})
+                command = ""
+                if name.casefold() == "fuel.exe":
+                    executable_index = next(
+                        (
+                            index
+                            for index, item in enumerate(raw_cmdline)
+                            if Path(item).name.casefold() == "fuel.exe"
+                        ),
+                        0,
+                    )
+                    arguments = raw_cmdline[executable_index + 1 :]
+                    command = arguments[0].casefold() if arguments else ""
+                values.append(
+                    {
+                        "pid": process.pid,
+                        "name": name or "unknown",
+                        "command": command,
+                    }
+                )
         return values
+
+    def _active_fuel_updates(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        all_active = self._active_processes(self.config.fuel_process_names)
+        expected_commands = {
+            value.casefold() for value in self.config.fuel_update_commands if value
+        }
+        updates = [
+            value
+            for value in all_active
+            if not value.get("command")
+            or str(value.get("command")).casefold() in expected_commands
+        ]
+        return updates, all_active
 
     @staticmethod
     def _read_json(path: Path) -> dict[str, Any] | None:
@@ -192,7 +226,7 @@ class TradeSystemMonitor:
     def _observe_data(self, now: datetime) -> ComponentNode:
         status_path = self._resolve(self.config.fuel_status_file)
         update_path = self._resolve(self.config.fuel_update_file)
-        active = self._active_processes(self.config.fuel_process_names)
+        active, all_fuel = self._active_fuel_updates()
         products = self._read_json(status_path)
         if products is not None:
             self._last_products = products
@@ -211,12 +245,17 @@ class TradeSystemMonitor:
                 reason="Fuel状态文件暂时不可读，保留上一次有效结论",
                 observed_at=now,
                 priority="high",
-                metrics={"active_processes": active, "status_file": str(status_path)},
+                metrics={
+                    "active_processes": active,
+                    "all_fuel_processes": all_fuel,
+                    "status_file": str(status_path),
+                },
             )
         errors: list[tuple[str, datetime | None]] = []
         latest_update: datetime | None = None
         latest_next: datetime | None = None
         overdue_products: list[str] = []
+        stalled_products: list[str] = []
         enabled = 0
         for name, value in products.items():
             if not isinstance(value, dict):
@@ -233,7 +272,6 @@ class TradeSystemMonitor:
                 latest_next = next_update
             if (
                 eligible
-                and active
                 and next_update
                 and now
                 > next_update
@@ -241,6 +279,13 @@ class TradeSystemMonitor:
                 and (updated is None or updated < next_update)
             ):
                 overdue_products.append(str(name))
+                if now > next_update + timedelta(
+                    seconds=(
+                        self.config.data_overdue_grace_seconds
+                        + self.config.data_stall_confirmation_seconds
+                    )
+                ):
+                    stalled_products.append(str(name))
             if errored and (updated is None or errored >= updated):
                 errors.append((str(name), errored))
         try:
@@ -261,28 +306,38 @@ class TradeSystemMonitor:
             max(0, int((now - file_at).total_seconds())) if file_at else None
         )
         progress_fresh = bool(
-            active
-            and progress_age_seconds is not None
-            and progress_age_seconds <= self.config.data_overdue_grace_seconds
+            progress_age_seconds is not None
+            and progress_age_seconds
+            <= max(
+                self.config.data_overdue_grace_seconds,
+                self.config.data_stall_confirmation_seconds,
+            )
         )
         state = (
             ComponentState.CRITICAL
             if errors
             else ComponentState.WARNING
-            if stale or (overdue_products and not progress_fresh)
+            if stale or (stalled_products and not progress_fresh)
             else ComponentState.HEALTHY
         )
         if errors:
             reason = f"{len(errors)}项数据产品最近一次更新失败"
         elif overdue_products and progress_fresh:
             reason = f"Fuel正在追赶更新，{len(overdue_products)}项数据待处理"
-        elif overdue_products:
+        elif overdue_products and not stalled_products:
+            reason = f"{len(overdue_products)}项数据已到更新时间，正在等待更新确认"
+        elif stalled_products:
             reason = (
-                f"Fuel更新进度停滞，{len(overdue_products)}项数据"
-                "已超过计划更新时间"
+                f"Fuel更新进度停滞，{len(stalled_products)}项数据"
+                "已超过确认窗口"
             )
         elif active:
-            reason = f"Fuel正在更新，已跟踪{enabled}项数据产品"
+            reason = f"Fuel正在执行全量更新，已跟踪{enabled}项数据产品"
+        elif all_fuel:
+            commands = sorted(
+                {str(value.get("command") or "unknown") for value in all_fuel}
+            )
+            reason = f"Fuel正在执行其他任务（{', '.join(commands)}），数据状态正常"
         elif stale:
             reason = "数据状态超过36小时未刷新"
         else:
@@ -297,12 +352,14 @@ class TradeSystemMonitor:
             metrics={
                 "engine": "Fuel",
                 "active_processes": active,
+                "all_fuel_processes": all_fuel,
                 "products": enabled,
                 "errors": len(errors),
                 "error_products": [name for name, _at in errors[:8]],
                 "last_update": latest_update.isoformat() if latest_update else "",
                 "next_update": latest_next.isoformat() if latest_next else "",
                 "overdue_products": overdue_products[:8],
+                "stalled_products": stalled_products[:8],
                 "progress_fresh": progress_fresh,
                 "progress_age_seconds": progress_age_seconds,
                 "overdue_seconds": (
@@ -438,6 +495,8 @@ class TradeSystemMonitor:
                 ComponentState.CRITICAL
                 if rocket.error_burst
                 else ComponentState.HEALTHY
+                if rocket.business_healthy
+                else ComponentState.WARNING
             )
         elif active_window:
             rocket_state = ComponentState.WARNING
@@ -462,6 +521,10 @@ class TradeSystemMonitor:
                 "active": rocket.active,
                 "error_burst": rocket.error_burst,
                 "log_age_seconds": rocket.log_age_seconds,
+                "business_healthy": rocket.business_healthy,
+                "business_age_seconds": rocket.business_age_seconds,
+                "heartbeat_source": rocket.heartbeat_source,
+                "business_health_known": rocket.business_health_known,
             },
         )
         children = (data, selection, order)

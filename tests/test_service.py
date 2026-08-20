@@ -439,6 +439,142 @@ class ServiceTests(unittest.TestCase):
             finally:
                 service.stop()
 
+    def test_isolated_probe_timeout_with_fresh_business_signal_does_not_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"LOCALAPPDATA": directory}
+        ):
+            active = datetime(
+                2026, 8, 20, 10, 0, tzinfo=timezone(timedelta(hours=8))
+            )
+            config = self.make_config()
+            config.mode = "recover"
+            sentinel = Path(directory) / "RECOVERY_ENABLED"
+            sentinel.write_text(SENTINEL_CONTENT, encoding="utf-8")
+            recovery = FakeRecovery()
+            service = GuardianService(
+                config,
+                process_monitor=FakeProcessMonitor(),
+                log_monitor=FakeLogMonitor(LogSignal.POSITIVE),
+                network_monitor=FakeNetworkMonitor(),
+                rocket_monitor=FakeRocketMonitor(
+                    active=True,
+                    business_healthy=True,
+                    business_age_seconds=20,
+                ),
+                probe=TimeoutProbe(),
+                recovery=recovery,
+                audit=AuditLogger(Path(directory) / "logs"),
+                safety_gate=SafetyGate(config, sentinel),
+                now=active,
+            )
+            try:
+                service.run_once(active + timedelta(seconds=1))
+                status = service.run_once(active + timedelta(seconds=16))
+                self.assertEqual(status.state, GuardianState.HEALTHY)
+                self.assertEqual(status.components["qmt_api"]["state"], "warning")
+                self.assertTrue(
+                    status.components["qmt_api"]["metrics"][
+                        "isolated_probe_degraded"
+                    ]
+                )
+                self.assertFalse(status.attention["required"])
+                self.assertEqual(status.probe["status"], "timeout")
+                self.assertEqual(recovery.calls, 0)
+                event_types = {
+                    event["event_type"] for event in service.audit.recent(20)
+                }
+                self.assertIn("qmt_probe_degraded", event_types)
+            finally:
+                service.stop()
+
+    def test_stale_rocket_process_no_longer_blocks_confirmed_qmt_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"LOCALAPPDATA": directory}
+        ):
+            active = datetime(
+                2026, 8, 20, 10, 0, tzinfo=timezone(timedelta(hours=8))
+            )
+            config = self.make_config()
+            config.mode = "recover"
+            config.recovery.allow_qmt_restart_while_rocket_active = False
+            sentinel = Path(directory) / "RECOVERY_ENABLED"
+            sentinel.write_text(SENTINEL_CONTENT, encoding="utf-8")
+            recovery = FakeRecovery()
+            quantclass = FakeQuantclassController()
+            service = GuardianService(
+                config,
+                process_monitor=FakeProcessMonitor(ProcessStatus.MISSING),
+                log_monitor=FakeLogMonitor(),
+                network_monitor=FakeNetworkMonitor(),
+                rocket_monitor=FakeRocketMonitor(
+                    active=True,
+                    business_healthy=False,
+                    business_age_seconds=600,
+                ),
+                probe=FakeProbe(),
+                recovery=recovery,
+                quantclass_controller=quantclass,
+                audit=AuditLogger(Path(directory) / "logs"),
+                safety_gate=SafetyGate(config, sentinel),
+                now=active,
+            )
+            try:
+                service.run_once(active + timedelta(seconds=1))
+                service.run_once(active + timedelta(seconds=16))
+                status = service.run_once(active + timedelta(seconds=31))
+                self.assertEqual(status.state, GuardianState.VERIFYING)
+                self.assertEqual(recovery.calls, 1)
+                self.assertEqual(quantclass.calls, 0)
+                requested = next(
+                    event
+                    for event in service.audit.recent(30)
+                    if event["event_type"] == "recovery_requested"
+                )
+                self.assertFalse(
+                    requested["payload"]["rocket_business_healthy"]
+                )
+            finally:
+                service.stop()
+
+    def test_rocket_warning_window_starts_after_its_own_startup_grace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"LOCALAPPDATA": directory}
+        ):
+            config = self.make_config()
+            service = GuardianService(
+                config,
+                process_monitor=FakeProcessMonitor(),
+                log_monitor=FakeLogMonitor(),
+                network_monitor=FakeNetworkMonitor(),
+                rocket_monitor=FakeRocketMonitor(),
+                probe=FakeProbe(),
+                recovery=FakeRecovery(),
+                audit=AuditLogger(Path(directory) / "logs"),
+                safety_gate=SafetyGate(config, Path(directory) / "sentinel"),
+            )
+            zone = timezone(timedelta(hours=8))
+            try:
+                before = datetime(2026, 8, 20, 9, 4, 59, tzinfo=zone)
+                start = datetime(2026, 8, 20, 9, 5, 0, tzinfo=zone)
+                after = datetime(2026, 8, 20, 15, 30, 1, tzinfo=zone)
+                self.assertFalse(
+                    service._rocket_expected_active(
+                        before, service.calendar.schedule_at(before)
+                    )
+                )
+                self.assertTrue(
+                    service._rocket_expected_active(
+                        start, service.calendar.schedule_at(start)
+                    )
+                )
+                self.assertFalse(
+                    service._rocket_expected_active(
+                        after, service.calendar.schedule_at(after)
+                    )
+                )
+            finally:
+                service.stop()
+
     def test_observation_mode_never_calls_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             os.environ, {"LOCALAPPDATA": directory}

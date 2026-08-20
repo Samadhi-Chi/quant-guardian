@@ -43,6 +43,7 @@ class RocketConfig:
         default_factory=lambda: ["rocket.exe", "python.exe"]
     )
     log_directory: str = r"C:\Quantclass\data\real_trading\rocket\data\系统日志"
+    business_heartbeat_stale_seconds: int = 120
 
 
 @dataclass(slots=True)
@@ -56,6 +57,7 @@ class TradeSystemConfig:
     )
     quantclass_config: str = r"C:\Quantclass\config.json"
     fuel_process_names: list[str] = field(default_factory=lambda: ["fuel.exe"])
+    fuel_update_commands: list[str] = field(default_factory=lambda: ["all_data"])
     fuel_status_file: str = r"code\data\products-status.json"
     fuel_update_file: str = r"code\data\products-update.json"
     fuel_log_directory: str = r"code\data\log"
@@ -71,6 +73,9 @@ class TradeSystemConfig:
     )
     locker_directory: str = r"real_trading\data\locker"
     data_overdue_grace_seconds: int = 900
+    data_stall_confirmation_seconds: int = 300
+    rocket_expected_start: str = "09:00"
+    rocket_startup_grace_seconds: int = 300
     task_log_tail_bytes: int = 262_144
 
 
@@ -212,6 +217,12 @@ class AppConfig:
             errors.append("trade_system.client_process_names must not be empty")
         if str(self.trade_system.selection_engine).casefold() not in {"aqua", "zeus"}:
             errors.append("trade_system.selection_engine must be 'aqua' or 'zeus'")
+        if self.rocket.business_heartbeat_stale_seconds < 30:
+            errors.append("rocket.business_heartbeat_stale_seconds must be >= 30")
+        if self.trade_system.data_stall_confirmation_seconds < 0:
+            errors.append("trade_system.data_stall_confirmation_seconds must be >= 0")
+        if self.trade_system.rocket_startup_grace_seconds < 0:
+            errors.append("trade_system.rocket_startup_grace_seconds must be >= 0")
         for label, value in (
             ("active_start", self.monitoring.active_start),
             ("active_end", self.monitoring.active_end),
@@ -221,6 +232,7 @@ class AppConfig:
             ("afternoon_start", self.trading.afternoon_start),
             ("afternoon_end", self.trading.afternoon_end),
             ("postmarket_end", self.trading.postmarket_end),
+            ("rocket_expected_start", self.trade_system.rocket_expected_start),
         ):
             try:
                 hour, minute = value.split(":", 1)
