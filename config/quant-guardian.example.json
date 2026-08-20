@@ -43,6 +43,7 @@
     "data_stall_confirmation_seconds": 300,
     "fuel_pause_heartbeat_stale_seconds": 180,
     "fuel_min_data_stale_seconds": 720,
+    "fuel_min_data_sessions": ["09:15-11:35", "13:00-15:05"],
     "task_log_tail_bytes": 262144
   },
   "monitoring": {

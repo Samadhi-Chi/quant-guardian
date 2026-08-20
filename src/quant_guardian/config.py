@@ -76,6 +76,9 @@ class TradeSystemConfig:
     data_stall_confirmation_seconds: int = 300
     fuel_pause_heartbeat_stale_seconds: int = 180
     fuel_min_data_stale_seconds: int = 720
+    fuel_min_data_sessions: list[str] = field(
+        default_factory=lambda: ["09:15-11:35", "13:00-15:05"]
+    )
     rocket_expected_start: str = "09:00"
     rocket_startup_grace_seconds: int = 300
     task_log_tail_bytes: int = 262_144
@@ -227,6 +230,27 @@ class AppConfig:
             errors.append("trade_system.fuel_pause_heartbeat_stale_seconds must be >= 60")
         if self.trade_system.fuel_min_data_stale_seconds < 60:
             errors.append("trade_system.fuel_min_data_stale_seconds must be >= 60")
+        if not self.trade_system.fuel_min_data_sessions:
+            errors.append("trade_system.fuel_min_data_sessions must not be empty")
+        for index, session in enumerate(self.trade_system.fuel_min_data_sessions):
+            try:
+                start, end = str(session).split("-", 1)
+                start_hour, start_minute = (int(value) for value in start.split(":"))
+                end_hour, end_minute = (int(value) for value in end.split(":"))
+                if not (
+                    0 <= start_hour <= 23
+                    and 0 <= start_minute <= 59
+                    and 0 <= end_hour <= 23
+                    and 0 <= end_minute <= 59
+                    and start_hour * 60 + start_minute
+                    < end_hour * 60 + end_minute
+                ):
+                    raise ValueError
+            except (TypeError, ValueError):
+                errors.append(
+                    "trade_system.fuel_min_data_sessions"
+                    f"[{index}] must use HH:mm-HH:mm"
+                )
         if self.trade_system.rocket_startup_grace_seconds < 0:
             errors.append("trade_system.rocket_startup_grace_seconds must be >= 0")
         for label, value in (

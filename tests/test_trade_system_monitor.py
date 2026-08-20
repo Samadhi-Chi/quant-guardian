@@ -260,7 +260,9 @@ class TradeSystemMonitorTests(unittest.TestCase):
     def test_scheduled_fuel_pause_uses_fresh_minute_data_as_health_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            now = datetime.now().astimezone().replace(microsecond=0)
+            now = datetime.now().astimezone().replace(
+                hour=13, minute=30, second=0, microsecond=0
+            )
             (root / "fuel" / "log").mkdir(parents=True)
             status_path = root / "fuel" / "status.json"
             status_path.write_text(
@@ -301,14 +303,14 @@ class TradeSystemMonitorTests(unittest.TestCase):
             monitor = TradeSystemMonitor(config)
             rocket = RocketObservation(False, False, "Rocket空闲")
             with patch.object(TradeSystemMonitor, "_active_processes", return_value=[]):
-                paused = monitor.observe(now, rocket=rocket, active_window=False)
+                paused = monitor.observe(now, rocket=rocket, active_window=True)
                 with log_path.open("a", encoding="utf-8") as stream:
                     stream.write(
                         f"INFO:root:{now + timedelta(minutes=1):%H:%M:%S} --> "
                         "[command in]: C:\\data\\fuel\\fuel.exe all_data\n"
                     )
                 resumed = monitor.observe(
-                    now + timedelta(minutes=1), rocket=rocket, active_window=False
+                    now + timedelta(minutes=1), rocket=rocket, active_window=True
                 )
             self.assertEqual(paused.data.state, ComponentState.HEALTHY)
             self.assertTrue(paused.data.metrics["full_update_paused"])
@@ -321,7 +323,9 @@ class TradeSystemMonitorTests(unittest.TestCase):
     def test_scheduled_fuel_pause_warns_when_minute_data_heartbeat_is_stale(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            now = datetime.now().astimezone().replace(microsecond=0)
+            now = datetime.now().astimezone().replace(
+                hour=13, minute=30, second=0, microsecond=0
+            )
             self.write_fuel(root, now)
             (root / "fuel" / "log").mkdir()
             (root / "fuel" / "log" / f"{now:%Y-%m-%d}_日志.log").write_text(
@@ -341,7 +345,7 @@ class TradeSystemMonitorTests(unittest.TestCase):
                 observation = TradeSystemMonitor(config).observe(
                     now,
                     rocket=RocketObservation(False, False, "Rocket空闲"),
-                    active_window=False,
+                    active_window=True,
                 )
             self.assertEqual(observation.data.state, ComponentState.WARNING)
             self.assertTrue(observation.data.metrics["full_update_paused"])
@@ -351,7 +355,9 @@ class TradeSystemMonitorTests(unittest.TestCase):
     def test_long_running_minute_round_is_fresh_before_it_writes_success(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            now = datetime.now().astimezone().replace(microsecond=0)
+            now = datetime.now().astimezone().replace(
+                hour=13, minute=30, second=0, microsecond=0
+            )
             self.write_fuel(root, now)
             (root / "fuel" / "log").mkdir()
             (root / "fuel" / "log" / f"{now:%Y-%m-%d}_日志.log").write_text(
@@ -389,7 +395,7 @@ class TradeSystemMonitorTests(unittest.TestCase):
                 observation = TradeSystemMonitor(config).observe(
                     now,
                     rocket=RocketObservation(False, False, "Rocket空闲"),
-                    active_window=False,
+                    active_window=True,
                 )
             self.assertEqual(observation.data.state, ComponentState.HEALTHY)
             self.assertTrue(observation.data.metrics["full_update_paused"])
@@ -398,6 +404,98 @@ class TradeSystemMonitorTests(unittest.TestCase):
             self.assertTrue(observation.data.metrics["min_data_running"])
             self.assertTrue(observation.data.metrics["min_data_fresh"])
             self.assertIn("分钟数据正在更新", observation.data.reason)
+
+    def test_minute_data_is_not_required_after_its_observed_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            now = datetime.now().astimezone().replace(
+                hour=15, minute=15, second=0, microsecond=0
+            )
+            self.write_fuel(root, now)
+            (root / "fuel" / "log").mkdir()
+            (root / "fuel" / "log" / f"{now:%Y-%m-%d}_日志.log").write_text(
+                f"INFO:root:{now.replace(hour=15, minute=1):%H:%M:%S} --> "
+                "[command in]: C:\\data\\fuel\\fuel.exe min_data\n"
+                f"INFO:root:{now.replace(hour=15, minute=2):%H:%M:%S} --> "
+                "[加速数据源] 本轮完成，成功 1/1 个 hm\n"
+                f"INFO:root:{now - timedelta(seconds=5):%H:%M:%S} --> "
+                "[command in]: C:\\data\\fuel\\fuel.exe all_data\n"
+                f"INFO:root:{now - timedelta(seconds=5):%H:%M:%S} --> "
+                "在交易时间，不再更新数据。\n",
+                encoding="utf-8",
+            )
+            config = self.make_config(root)
+            config.fuel_log_directory = "fuel/log"
+            with patch.object(TradeSystemMonitor, "_active_processes", return_value=[]):
+                observation = TradeSystemMonitor(config).observe(
+                    now,
+                    rocket=RocketObservation(False, False, "Rocket空闲"),
+                    active_window=True,
+                )
+            self.assertEqual(observation.data.state, ComponentState.HEALTHY)
+            self.assertTrue(observation.data.metrics["full_update_paused"])
+            self.assertFalse(observation.data.metrics["min_data_expected"])
+            self.assertFalse(observation.data.metrics["min_data_fresh"])
+            self.assertTrue(observation.data.metrics["min_data_health_ok"])
+            self.assertIn("分钟数据无需运行", observation.data.reason)
+
+    def test_full_update_process_is_healthy_while_stale_products_catch_up(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            now = datetime.now().astimezone().replace(
+                hour=16, minute=1, second=0, microsecond=0
+            )
+            (root / "fuel").mkdir(parents=True)
+            status_path = root / "fuel" / "status.json"
+            status_path.write_text(
+                json.dumps(
+                    {
+                        "stock-price": {
+                            "isListed": 1,
+                            "canAutoUpdate": 1,
+                            "lastUpdateTime": (now - timedelta(hours=1)).strftime(
+                                "%Y-%m-%d %H:%M:%S"
+                            ),
+                            "nextUpdateTime": (now - timedelta(minutes=30)).strftime(
+                                "%Y-%m-%d %H:%M:%S"
+                            ),
+                            "lastErrTime": None,
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            old_timestamp = (now - timedelta(minutes=30)).timestamp()
+            os.utime(status_path, (old_timestamp, old_timestamp))
+            (root / "fuel" / "update.json").write_text("{}", encoding="utf-8")
+
+            def active_processes(names: list[str]) -> list[dict[str, object]]:
+                if "fuel.exe" in names:
+                    return [
+                        {
+                            "pid": 88,
+                            "name": "fuel.exe",
+                            "command": "all_data",
+                        }
+                    ]
+                return []
+
+            with patch.object(
+                TradeSystemMonitor,
+                "_active_processes",
+                side_effect=active_processes,
+            ):
+                observation = TradeSystemMonitor(self.make_config(root)).observe(
+                    now,
+                    rocket=RocketObservation(False, False, "Rocket空闲"),
+                    active_window=True,
+                )
+            self.assertEqual(observation.data.state, ComponentState.HEALTHY)
+            self.assertEqual(
+                observation.data.metrics["condition"],
+                "fuel_full_update_running",
+            )
+            self.assertIn("执行全量更新", observation.data.reason)
 
     def test_active_rocket_with_stale_business_heartbeat_is_warning(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

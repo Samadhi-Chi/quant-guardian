@@ -350,7 +350,31 @@ class TradeSystemMonitor:
         except ValueError:
             return None
 
-    def _observe_data(self, now: datetime) -> ComponentNode:
+    def _fuel_minute_session_start(self, now: datetime) -> datetime | None:
+        current_minute = now.hour * 60 + now.minute
+        for raw_session in self.config.fuel_min_data_sessions:
+            try:
+                start_text, end_text = str(raw_session).split("-", 1)
+                start_hour, start_minute = (
+                    int(value) for value in start_text.split(":", 1)
+                )
+                end_hour, end_minute = (
+                    int(value) for value in end_text.split(":", 1)
+                )
+            except (TypeError, ValueError):
+                continue
+            start = start_hour * 60 + start_minute
+            end = end_hour * 60 + end_minute
+            if start <= current_minute <= end:
+                return now.replace(
+                    hour=start_hour,
+                    minute=start_minute,
+                    second=0,
+                    microsecond=0,
+                )
+        return None
+
+    def _observe_data(self, now: datetime, *, active_window: bool) -> ComponentNode:
         status_path = self._resolve(self.config.fuel_status_file)
         update_path = self._resolve(self.config.fuel_update_file)
         active, all_fuel = self._active_fuel_updates()
@@ -501,8 +525,20 @@ class TradeSystemMonitor:
             or min_data_scheduler_fresh
             or min_data_processes
         )
-        min_data_expected = bool(
+        min_data_seen = bool(
             fuel_log.last_min_data_started_at or min_data_processes
+        )
+        min_data_session_started_at = (
+            self._fuel_minute_session_start(now) if active_window else None
+        )
+        min_data_expected = min_data_session_started_at is not None
+        min_data_startup_grace = bool(
+            min_data_session_started_at
+            and now - min_data_session_started_at
+            <= timedelta(seconds=self.config.fuel_min_data_stale_seconds)
+        )
+        min_data_health_ok = bool(
+            not min_data_expected or min_data_fresh or min_data_startup_grace
         )
         state = (
             ComponentState.CRITICAL
@@ -512,10 +548,15 @@ class TradeSystemMonitor:
             or (
                 full_update_paused
                 and min_data_expected
-                and not min_data_fresh
+                and not min_data_health_ok
                 and not min_data_in_progress
             )
-            or (not full_update_paused and stalled_products and not progress_fresh)
+            or (
+                not full_update_paused
+                and stalled_products
+                and not progress_fresh
+                and not active
+            )
             else ComponentState.HEALTHY
         )
         if errors:
@@ -524,10 +565,13 @@ class TradeSystemMonitor:
         elif stale:
             reason = "数据状态超过36小时未刷新"
             condition = "fuel_status_stale"
+        elif full_update_paused and not min_data_expected:
+            reason = "当前时段分钟数据无需运行，全量更新按计划暂停"
+            condition = "fuel_scheduled_pause_minute_idle"
         elif full_update_paused and min_data_in_progress:
             reason = "盘中分钟数据正在更新，全量更新按计划暂停"
             condition = "fuel_scheduled_pause_minute_running"
-        elif full_update_paused and min_data_fresh:
+        elif full_update_paused and min_data_health_ok:
             reason = "盘中分钟数据正常，全量更新按计划暂停"
             condition = "fuel_scheduled_pause_minute_healthy"
         elif full_update_paused and min_data_expected:
@@ -542,15 +586,15 @@ class TradeSystemMonitor:
         elif overdue_products and not stalled_products:
             reason = f"{len(overdue_products)}项数据已到更新时间，正在等待更新确认"
             condition = "fuel_awaiting_confirmation"
+        elif active:
+            reason = f"Fuel正在执行全量更新，已跟踪{enabled}项数据产品"
+            condition = "fuel_full_update_running"
         elif stalled_products:
             reason = (
                 f"Fuel更新进度停滞，{len(stalled_products)}项数据"
                 "已超过确认窗口"
             )
             condition = "fuel_stalled"
-        elif active:
-            reason = f"Fuel正在执行全量更新，已跟踪{enabled}项数据产品"
-            condition = "fuel_full_update_running"
         elif all_fuel:
             commands = sorted(
                 {str(value.get("command") or "unknown") for value in all_fuel}
@@ -584,7 +628,15 @@ class TradeSystemMonitor:
                 "full_update_paused": full_update_paused,
                 "scheduled_pause_age_seconds": scheduled_pause_age_seconds,
                 "min_data_expected": min_data_expected,
+                "min_data_seen": min_data_seen,
                 "min_data_fresh": min_data_fresh,
+                "min_data_health_ok": min_data_health_ok,
+                "min_data_startup_grace": min_data_startup_grace,
+                "min_data_session_started_at": (
+                    min_data_session_started_at.isoformat()
+                    if min_data_session_started_at
+                    else ""
+                ),
                 "min_data_success_fresh": min_data_success_fresh,
                 "min_data_scheduler_fresh": min_data_scheduler_fresh,
                 "min_data_running": bool(min_data_processes),
@@ -685,7 +737,7 @@ class TradeSystemMonitor:
                 observed_at=now,
             )
             return TradeSystemObservation(idle, idle, idle, idle)
-        data = self._observe_data(now)
+        data = self._observe_data(now, active_window=active_window)
         aqua = self._task_node(
             node_id="trade_system.selection.aqua",
             name="选股引擎 · Aqua",
