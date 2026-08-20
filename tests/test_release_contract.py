@@ -34,7 +34,11 @@ class ReleaseContractTests(unittest.TestCase):
         )
         self.assertIn("Get-Command python -CommandType Application", build_script)
         self.assertIn("[string]$Python", package_script)
-        self.assertIn("-Python (Get-Command python -CommandType Application).Source", workflow)
+        ci_python_argument = (
+            "-Python (Get-Command python -CommandType Application "
+            "| Select-Object -First 1 -ExpandProperty Source)"
+        )
+        self.assertEqual(workflow.count(ci_python_argument), 2)
 
     def test_gitleaks_pr_scan_uses_read_only_token_without_comments(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
