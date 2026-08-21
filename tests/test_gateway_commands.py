@@ -111,6 +111,8 @@ class GatewayCommandTests(unittest.TestCase):
     def test_telegram_restart_requires_bound_callback(self) -> None:
         reply = self.processor.process(self.message("重启 QMT"))
         self.assertEqual(reply.outcome, "awaiting_confirmation")
+        self.assertIn("若 Rocket 正在运行", reply.text)
+        self.assertIn("自动恢复仍会保持安全阻断", reply.text)
         callback_data = reply.buttons[0][0][1]
         callback = InboundMessage(
             channel="telegram",

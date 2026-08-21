@@ -315,6 +315,8 @@ class CommandProcessor:
             "即将执行 QMT 受控重启\n"
             f"{status_line}\n"
             "范围：仅 QMT；不会重启 Quantclass，也不会操作 Fuel/Aqua/Zeus/Rocket。\n"
+            "提示：若 Rocket 正在运行，QMT 重启会暂时中断其连接；本次人工确认可继续，"
+            "自动恢复仍会保持安全阻断。\n"
             f"确认有效期：{remote.confirmation_ttl_seconds} 秒。"
         )
         if message.channel == "telegram":

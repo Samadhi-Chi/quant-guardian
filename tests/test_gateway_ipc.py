@@ -67,6 +67,7 @@ class FakeService:
         self.check_hook = None
         self.events = []
         self.operations = []
+        self.restart_success = True
 
     def operator_check(self, source, **kwargs):
         self.check_calls.append((source, kwargs))
@@ -76,7 +77,11 @@ class FakeService:
 
     def manual_restart(self, **kwargs):
         self.restart_calls.append(kwargs)
-        self._active_recovery = {"operation_id": "QGO-REMOTE-1"}
+        if self.restart_success:
+            self._active_recovery = {"operation_id": "QGO-REMOTE-1"}
+        else:
+            self._active_recovery = {}
+            self.machine.last_transition = SimpleNamespace(reason="QMT launcher missing")
         return self.status
 
     def query_events(self, **_kwargs):
@@ -241,7 +246,7 @@ class GatewayIpcTests(unittest.TestCase):
         self.assertEqual(len(self.service.restart_calls), 1)
         self.assertEqual(self.service.restart_calls[0]["initiator"], "remote_telegram")
 
-    def test_rocket_guard_blocks_remote_restart(self) -> None:
+    def test_explicitly_confirmed_remote_restart_allows_active_rocket(self) -> None:
         self.service.status = FakeStatus(rocket=True)
         challenge = self.store.create_challenge(
             channel="telegram",
@@ -251,14 +256,38 @@ class GatewayIpcTests(unittest.TestCase):
             ttl_seconds=60,
             require_code=False,
         )
-        with self.assertRaises(GatewayIpcError) as raised:
-            self.request(
-                "confirm_restart_qmt",
-                request_id=challenge.request_id,
-                params={"challenge_id": challenge.challenge_id},
-            )
-        self.assertIn("Rocket", str(raised.exception))
-        self.assertFalse(self.service.restart_calls)
+        result = self.request(
+            "confirm_restart_qmt",
+            request_id=challenge.request_id,
+            params={"challenge_id": challenge.challenge_id},
+        )
+        self.assertEqual(result["status"], "accepted")
+        self.assertIn("Rocket", result["reason"])
+        self.assertEqual(len(self.service.restart_calls), 1)
+        command = self.store.command_result(challenge.request_id)
+        self.assertIn("Rocket was active", command["reason"])
+
+    def test_remote_restart_launch_failure_is_reported_as_failed(self) -> None:
+        self.service.restart_success = False
+        challenge = self.store.create_challenge(
+            channel="telegram",
+            sender_id="42",
+            chat_id="42",
+            action="restart_qmt",
+            ttl_seconds=60,
+            require_code=False,
+        )
+        result = self.request(
+            "confirm_restart_qmt",
+            request_id=challenge.request_id,
+            params={"challenge_id": challenge.challenge_id},
+        )
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("QMT launcher missing", result["reason"])
+        self.assertEqual(len(self.service.restart_calls), 1)
+        command = self.store.command_result(challenge.request_id)
+        self.assertEqual(command["status"], "failed")
+        self.assertIn("failed to launch", command["reason"])
 
     def test_network_guard_blocks_remote_restart(self) -> None:
         self.service.machine.last_snapshot.network_available = False

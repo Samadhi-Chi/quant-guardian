@@ -1681,8 +1681,6 @@ class GuardianService:
                 blocked_reason = (
                     "network is unavailable; remote QMT restart is blocked"
                     if not current_snapshot.network_available
-                    else "Rocket is active; remote QMT restart is blocked"
-                    if current_snapshot.rocket_active
                     else "QMT requires manual login; remote restart is blocked"
                     if current_snapshot.login_requires_manual
                     else ""

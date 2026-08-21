@@ -563,8 +563,7 @@ class GuardianControlServer:
         if not bool(getattr(snapshot, "network_available", False)):
             raise PermissionError("本机网络不可用，远程QMT重启被安全闸门阻断")
         rocket = getattr(current, "rocket", {}) or {}
-        if bool(rocket.get("active")):
-            raise PermissionError("Rocket正在运行，远程QMT重启被安全闸门阻断")
+        rocket_active = bool(rocket.get("active"))
         probe = getattr(current, "probe", {}) or {}
         if bool(probe.get("login_requires_manual")):
             raise PermissionError("QMT需要人工登录，远程重启不会继续")
@@ -591,6 +590,54 @@ class GuardianControlServer:
         )
         active = getattr(self.service, "_active_recovery", None) or {}
         operation_id = str(active.get("operation_id") or "")
+        if not operation_id:
+            machine = getattr(self.service, "machine", None)
+            transition = getattr(machine, "last_transition", None)
+            failure_detail = _safe_text(
+                getattr(transition, "reason", "")
+                or "QMT controlled restart did not enter recovery verification"
+            )
+            command_reason = f"QMT controlled restart failed to launch: {failure_detail}"
+            self.store.record_command(
+                request_id=challenge.request_id,
+                channel=channel,
+                sender_id=sender_id,
+                chat_id=chat_id,
+                command="restart_qmt",
+                status="failed",
+                reason=command_reason,
+            )
+            self._record_command_audit(
+                challenge.request_id,
+                channel,
+                "restart_qmt",
+                "failed",
+                command_reason,
+                target="qmt_api",
+            )
+            return {
+                "status": "failed",
+                "reason": f"QMT受控重启未启动：{failure_detail}",
+                "operation_id": "",
+                "guardian": safe_status(status),
+            }
+        accepted_reason = (
+            "QMT controlled restart was accepted after explicit confirmation "
+            "while Rocket was active"
+            if rocket_active
+            else "QMT controlled restart was accepted and launched"
+        )
+        audit_reason = (
+            "remote QMT restart accepted after explicit confirmation with Rocket active"
+            if rocket_active
+            else "remote QMT restart accepted"
+        )
+        response_reason = (
+            "QMT受控重启已启动；检测到Rocket正在运行，本次为人工确认操作，"
+            "Guardian正在验证恢复结果"
+            if rocket_active
+            else "QMT受控重启已启动，Guardian正在验证恢复结果"
+        )
         self.store.record_command(
             request_id=challenge.request_id,
             channel=channel,
@@ -598,7 +645,7 @@ class GuardianControlServer:
             chat_id=chat_id,
             command="restart_qmt",
             status="succeeded",
-            reason="QMT controlled restart was accepted and launched",
+            reason=accepted_reason,
             operation_id=operation_id,
         )
         self._record_command_audit(
@@ -606,13 +653,13 @@ class GuardianControlServer:
             channel,
             "restart_qmt",
             "succeeded",
-            "remote QMT restart accepted",
+            audit_reason,
             target="qmt_api",
             operation_id=operation_id,
         )
         return {
             "status": "accepted",
-            "reason": "QMT受控重启已启动，Guardian正在验证恢复结果",
+            "reason": response_reason,
             "operation_id": operation_id,
             "guardian": safe_status(status),
         }
