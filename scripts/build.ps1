@@ -33,8 +33,12 @@ try {
 }
 if ($BuildExitCode -ne 0) { exit $BuildExitCode }
 $Executable = Join-Path $ProjectRoot "dist\Quant Guardian\Quant Guardian.exe"
+$GatewayExecutable = Join-Path $ProjectRoot "dist\Quant Guardian\Quant Guardian Gateway.exe"
 if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
     throw "Build finished without the expected executable: $Executable"
+}
+if (-not (Test-Path -LiteralPath $GatewayExecutable -PathType Leaf)) {
+    throw "Build finished without the expected gateway executable: $GatewayExecutable"
 }
 $Version = (& $Python -c "from quant_guardian import __version__; print(__version__)").Trim()
 if ($LASTEXITCODE -ne 0 -or -not $Version) {
@@ -43,3 +47,5 @@ if ($LASTEXITCODE -ne 0 -or -not $Version) {
 Set-Content -LiteralPath (Join-Path (Split-Path -Parent $Executable) "VERSION") -Value $Version -Encoding ascii
 $Hash = Get-FileHash -LiteralPath $Executable -Algorithm SHA256
 $Hash | Format-List
+$GatewayHash = Get-FileHash -LiteralPath $GatewayExecutable -Algorithm SHA256
+$GatewayHash | Format-List

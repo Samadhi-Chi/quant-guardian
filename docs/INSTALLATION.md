@@ -6,11 +6,11 @@
 2. Compare the ZIP hash with:
 
 ~~~powershell
-Get-FileHash .\Quant-Guardian-v0.3.0-beta.1-windows-x64.zip -Algorithm SHA256
+Get-FileHash .\Quant-Guardian-v0.4.0-beta.1-windows-x64.zip -Algorithm SHA256
 ~~~
 
 3. Extract it to a normal user-owned directory, not a drive root, user profile root or Programs root.
-4. Run Quant Guardian\Quant Guardian.exe in observation mode.
+4. Run Quant Guardian\Quant Guardian.exe in observation mode. The adjacent `Quant Guardian Gateway.exe` is started only after the messaging Gateway is enabled.
 
 The beta is unsigned. SmartScreen may display an unknown-publisher warning. Verify the GitHub repository, asset name and SHA-256 before choosing to run it.
 

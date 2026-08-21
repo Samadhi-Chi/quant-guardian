@@ -10,6 +10,8 @@ Quant Guardian 自有代码采用 Apache-2.0。下列组件继续受各自许可
 | PySide6 / PySide6 Essentials / PySide6 Addons / Shiboken6 | 6.11.1 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only, or commercial | <https://doc.qt.io/qtforpython-6/> |
 | Qt libraries distributed with PySide6 | 6.11.1 | Primarily LGPL-3.0/GPL; individual modules and bundled third-party code may differ | <https://doc.qt.io/qtforpython-6/licenses.html> |
 | psutil | 7.2.2 | BSD-3-Clause | <https://github.com/giampaolo/psutil> |
+| qrcode | 8.2 | BSD-3-Clause (also contains attributed MIT-derived QR implementation) | <https://github.com/lincolnloop/python-qrcode> |
+| colorama | 0.4.6 | BSD-3-Clause | <https://github.com/tartley/colorama> |
 | tzdata | 2026.3 | Apache-2.0 | <https://github.com/python/tzdata> |
 
 The Windows one-folder build dynamically loads the Qt DLLs as separate files. Users may replace or relink LGPL-covered Qt components for debugging or modification. Quant Guardian imposes no additional restriction on reverse engineering those LGPL-covered components for that purpose.
@@ -24,6 +26,10 @@ The Windows one-folder build dynamically loads the Qt DLLs as separate files. Us
 | pywin32-ctypes | 0.2.3 | BSD-3-Clause | <https://github.com/enthought/pywin32-ctypes> |
 
 Build tools do not change the Apache-2.0 license of Quant Guardian's own source. The exact release dependency inventory is also published as a CycloneDX SBOM.
+
+## Adapted source
+
+The text-only personal WeChat iLink adapter in `src/quant_guardian/gateway/channels/weixin.py` independently adapts protocol constants and message structures from the MIT-licensed [Nous Research Hermes Agent Weixin adapter](https://github.com/NousResearch/hermes-agent/blob/main/gateway/platforms/weixin.py), accessed 2026-08-19. Quant Guardian does not include Hermes Agent, its LLM/agent runtime, shell tools, media transport, group-control logic, or other gateway platforms. The upstream MIT notice is reproduced in `licenses/HERMES-AGENT-MIT.txt`.
 
 ## External integrations not distributed
 

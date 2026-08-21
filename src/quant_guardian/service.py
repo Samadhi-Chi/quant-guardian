@@ -22,7 +22,6 @@ from quant_guardian.domain.models import (
     ProbeStatus,
     ProcessStatus,
     RecommendedAction,
-    TradingPhase,
     Transition,
 )
 from quant_guardian.domain.state_machine import GuardianStateMachine, StateMachinePolicy
@@ -247,11 +246,11 @@ class GuardianService:
         self._monitor_heartbeat_path = directories["state"] / "monitor-heartbeat.json"
         self._last_signature: tuple[object, ...] | None = None
         self._last_trade_signature: tuple[object, ...] | None = None
-        self._last_trade_event_at: datetime | None = None
         self._manual_after_recovery = False
         self._last_reconciliation: dict[str, object] = {}
         self._idle_failure_count = 0
         self._last_idle_failure_at: datetime | None = None
+        self._isolated_probe_degraded = False
         self._last_trade_observation: TradeSystemObservation | None = None
         self._last_schedule: ScheduleDecision | None = None
         self._current_incident_id = ""
@@ -388,6 +387,9 @@ class GuardianService:
         *,
         manual: bool,
         snapshot: HealthSnapshot,
+        initiator: str = "",
+        remote_channel: str = "",
+        remote_request_id: str = "",
     ) -> dict[str, object]:
         incident_id = self._current_incident_id
         if not manual and not incident_id:
@@ -405,13 +407,17 @@ class GuardianService:
             "operation_id": self._new_identifier("QGO", at),
             "incident_id": incident_id,
             "operation_type": "qmt_restart",
-            "initiator": "manual" if manual else "automatic",
+            "initiator": initiator or ("manual" if manual else "automatic"),
             "target_component": "qmt_api",
             "context": "production",
             "attempt_no": attempt_no,
             "started_at": at,
             "manual": manual,
         }
+        if remote_channel:
+            operation["remote_channel"] = remote_channel
+        if remote_request_id:
+            operation["remote_request_id"] = remote_request_id
         self._active_recovery = operation
         return operation
 
@@ -586,35 +592,6 @@ class GuardianService:
 
     def _record_trade_system(self, observation: TradeSystemObservation) -> None:
         children = observation.node.children
-        signature = tuple(
-            (
-                child.id,
-                child.state.value,
-                child.metrics.get("selected"),
-                child.metrics.get("engine"),
-            )
-            for child in children
-        )
-        severity = (
-            "critical"
-            if observation.node.state is ComponentState.CRITICAL
-            else "warning"
-            if observation.node.state is ComponentState.WARNING
-            else "info"
-        )
-        same_state = signature == self._last_trade_signature
-        reminder_due = bool(
-            severity in {"critical", "warning"}
-            and self._last_trade_event_at is not None
-            and (
-                observation.node.observed_at - self._last_trade_event_at
-            ).total_seconds()
-            >= 15 * 60
-        )
-        if same_state and not reminder_due:
-            return
-        self._last_trade_signature = signature
-        self._last_trade_event_at = observation.node.observed_at
         flattened = [*children]
         for child in children:
             flattened.extend(child.children)
@@ -624,6 +601,27 @@ class GuardianService:
             if child.state in {ComponentState.CRITICAL, ComponentState.WARNING}
             and child.metrics.get("selected") is not False
         ]
+        signature = tuple(
+            sorted(
+                (
+                    child.id,
+                    child.state.value,
+                    str(child.metrics.get("condition") or child.reason),
+                )
+                for child in actionable
+            )
+        )
+        previous_signature = self._last_trade_signature
+        if signature == previous_signature:
+            return
+        self._last_trade_signature = signature
+        severity = (
+            "critical"
+            if any(child.state is ComponentState.CRITICAL for child in actionable)
+            else "warning"
+            if actionable
+            else "info"
+        )
         culprit = max(
             actionable,
             key=lambda child: (
@@ -653,11 +651,22 @@ class GuardianService:
             moment=observation.node.observed_at,
         )
         if severity in {"critical", "warning"}:
+            issue_code = str(culprit.metrics.get("condition") or culprit.id)
             self.notifications.publish(
                 "Trade System需要处理",
                 summary,
                 severity=severity,
-                event_key=f"trade_system:{culprit.id}:{culprit.state.value}",
+                event_key=(
+                    f"trade_system:{culprit.id}:{culprit.state.value}:{issue_code}"
+                ),
+                now=observation.node.observed_at,
+            )
+        elif previous_signature:
+            self.notifications.publish(
+                "Trade System已恢复",
+                observation.node.reason,
+                severity="info",
+                event_key="trade_system:recovered",
                 now=observation.node.observed_at,
             )
 
@@ -707,6 +716,10 @@ class GuardianService:
             "error_burst": observation.error_burst,
             "reason": observation.reason,
             "log_age_seconds": observation.log_age_seconds,
+            "business_healthy": observation.business_healthy,
+            "business_age_seconds": observation.business_age_seconds,
+            "heartbeat_source": observation.heartbeat_source,
+            "business_health_known": observation.business_health_known,
         }
 
     @staticmethod
@@ -739,6 +752,92 @@ class GuardianService:
             self.config.thresholds.failure_threshold,
         )
 
+    def _rocket_expected_active(
+        self,
+        at: datetime,
+        schedule: ScheduleDecision,
+    ) -> bool:
+        if not schedule.trading_day:
+            return False
+        start_hour, start_minute = (
+            int(value)
+            for value in self.config.trade_system.rocket_expected_start.split(":", 1)
+        )
+        end_hour, end_minute = (
+            int(value) for value in self.config.trading.postmarket_end.split(":", 1)
+        )
+        expected_at = at.replace(
+            hour=start_hour,
+            minute=start_minute,
+            second=0,
+            microsecond=0,
+        ) + timedelta(seconds=self.config.trade_system.rocket_startup_grace_seconds)
+        end_at = at.replace(
+            hour=end_hour,
+            minute=end_minute,
+            second=0,
+            microsecond=0,
+        )
+        return expected_at <= at <= end_at
+
+    @staticmethod
+    def _is_isolated_probe_degraded(
+        process: ProcessObservation,
+        probe: ProbeObservation,
+        log: LogObservation,
+        network_available: bool,
+        rocket: RocketObservation,
+    ) -> bool:
+        corroborating_business = (
+            rocket.business_healthy or log.signal is LogSignal.POSITIVE
+        )
+        contradictory_log = log.signal in {
+            LogSignal.EXPLICIT_DISCONNECT,
+            LogSignal.LOGIN_FAILURE,
+        }
+        return (
+            process.status is ProcessStatus.HEALTHY
+            and probe.status is ProbeStatus.TIMEOUT
+            and network_available
+            and not log.login_requires_manual
+            and corroborating_business
+            and not contradictory_log
+        )
+
+    def _record_probe_correlation(
+        self,
+        at: datetime,
+        degraded: bool,
+        probe: ProbeObservation,
+        log: LogObservation,
+        rocket: RocketObservation,
+    ) -> None:
+        if degraded == self._isolated_probe_degraded:
+            return
+        self._isolated_probe_degraded = degraded
+        self.audit.record(
+            "qmt_probe_degraded" if degraded else "qmt_probe_correlation_restored",
+            {
+                "component_id": "qmt_api.xtquant",
+                "raw_probe_status": probe.status.value,
+                "probe_reason": probe.reason,
+                "qmt_log_signal": log.signal.value,
+                "rocket_process_active": rocket.active,
+                "rocket_business_healthy": rocket.business_healthy,
+                "rocket_business_health_known": rocket.business_health_known,
+                "rocket_business_age_seconds": rocket.business_age_seconds,
+                "automatic_recovery_suppressed": degraded,
+                "reason": (
+                    "independent Guardian probe timed out while a separate "
+                    "business signal remained healthy"
+                    if degraded
+                    else "independent probe correlation returned to normal"
+                ),
+            },
+            severity="warning" if degraded else "info",
+            moment=at,
+        )
+
     def _qmt_component(
         self,
         at: datetime,
@@ -750,6 +849,7 @@ class GuardianService:
         schedule: ScheduleDecision,
         *,
         market_closed_session_idle: bool,
+        isolated_probe_degraded: bool = False,
     ) -> ComponentNode:
         process_node = ComponentNode(
             id="qmt_api.process",
@@ -763,6 +863,8 @@ class GuardianService:
         probe_state = (
             ComponentState.IDLE
             if market_closed_session_idle
+            else ComponentState.WARNING
+            if isolated_probe_degraded
             else _component_state_from_probe(probe.status)
         )
         connection_node = ComponentNode(
@@ -772,6 +874,8 @@ class GuardianService:
             reason=(
                 "休市期间券商交易会话暂不可用，不视为故障"
                 if market_closed_session_idle
+                else "Guardian独立探针超时；Rocket/QMT业务信号仍正常"
+                if isolated_probe_degraded
                 else
                 f"账户状态：{probe.account_status}"
                 if probe.status is ProbeStatus.HEALTHY
@@ -792,6 +896,8 @@ class GuardianService:
             reason=(
                 "休市期间账户只读查询暂停，不视为故障"
                 if market_closed_session_idle
+                else "独立只读查询暂时超时，业务侧仍有成功心跳"
+                if isolated_probe_degraded
                 else
                 "资产对象有效，只读查询正常"
                 if probe.status is ProbeStatus.HEALTHY and asset_valid
@@ -865,6 +971,8 @@ class GuardianService:
         reason = (
             "休市日：QMT进程正常，交易连接暂不可用；无需处理"
             if market_closed_session_idle
+            else "独立探针暂时超时；业务链路仍正常，不触发自动恢复"
+            if isolated_probe_degraded
             else "进程、XTQuant连接和账户只读查询正常"
             if state is ComponentState.HEALTHY
             else transition.reason
@@ -881,6 +989,7 @@ class GuardianService:
                 "log_reason": log.reason,
                 "log_is_supporting_evidence": True,
                 "market_closed_session_idle": market_closed_session_idle,
+                "isolated_probe_degraded": isolated_probe_degraded,
                 "calendar_source": schedule.source,
                 "raw_probe_state": probe.status.value,
             },
@@ -909,6 +1018,15 @@ class GuardianService:
                 "message": transition.reason,
                 "action": "检查后解除锁定",
                 "target": "unlock",
+            }
+        if bool(qmt.metrics.get("isolated_probe_degraded")):
+            return {
+                "required": False,
+                "level": "info",
+                "title": "QMT业务链路仍在运行",
+                "message": qmt.reason,
+                "action": "查看监控证据",
+                "target": "monitor",
             }
         if qmt.state in {ComponentState.CRITICAL, ComponentState.WARNING}:
             return {
@@ -1005,6 +1123,7 @@ class GuardianService:
         *,
         anomalous_idle: bool,
         market_closed_session_idle: bool = False,
+        isolated_probe_degraded: bool = False,
     ) -> ServiceStatus:
         safety = self.safety_gate.status()
         business = self.business.latest
@@ -1017,11 +1136,14 @@ class GuardianService:
             business,
             schedule,
             market_closed_session_idle=market_closed_session_idle,
+            isolated_probe_degraded=isolated_probe_degraded,
         )
         trade_node = trade.node
         display_reason = (
             "休市日，QMT进程正常；券商交易会话暂不可用，不触发自动恢复"
             if market_closed_session_idle
+            else "独立探针暂时超时；已有业务成功信号，不触发QMT重启"
+            if isolated_probe_degraded
             else transition.reason
         )
         return ServiceStatus(
@@ -1089,11 +1211,9 @@ class GuardianService:
             trade = self.trade_system_monitor.observe(
                 at,
                 rocket=rocket,
-                # Rocket is an order-execution kernel.  The broader 08:30-16:30
-                # monitoring window must not make an idle post-market Rocket a
-                # warning by itself.
-                active_window=trading_phase
-                in {TradingPhase.PREMARKET, TradingPhase.TRADING},
+                # Rocket normally starts near 09:00. The 08:30 Guardian window
+                # must not flag the order kernel before its own startup grace.
+                active_window=self._rocket_expected_active(at, schedule),
             )
             self._last_trade_observation = trade
             self._record_trade_system(trade)
@@ -1121,6 +1241,11 @@ class GuardianService:
                 log_signal=decision_log,
                 network_available=network_available,
                 rocket_active=rocket.active,
+                rocket_business_healthy=(
+                    rocket.business_healthy
+                    if rocket.business_health_known
+                    else None
+                ),
                 trading_phase=trading_phase,
                 account_status=probe.account_status,
                 login_requires_manual=log.login_requires_manual,
@@ -1129,6 +1254,9 @@ class GuardianService:
                     "probe_reason": probe.reason,
                     "log_reason": log.reason,
                     "rocket_error_burst": rocket.error_burst,
+                    "rocket_business_healthy": rocket.business_healthy,
+                    "rocket_business_health_known": rocket.business_health_known,
+                    "rocket_business_age_seconds": rocket.business_age_seconds,
                     "trade_system_state": trade.node.state.value,
                 },
             )
@@ -1137,8 +1265,26 @@ class GuardianService:
                 snapshot,
                 probe,
             )
-            decision_snapshot = (
-                replace(
+            isolated_probe_degraded = (
+                not market_closed_session_idle
+                and self._is_isolated_probe_degraded(
+                    process,
+                    probe,
+                    log,
+                    network_available,
+                    rocket,
+                )
+            )
+            self._record_probe_correlation(
+                at,
+                isolated_probe_degraded,
+                probe,
+                log,
+                rocket,
+            )
+            decision_snapshot = snapshot
+            if market_closed_session_idle:
+                decision_snapshot = replace(
                     snapshot,
                     probe_status=ProbeStatus.HEALTHY,
                     log_signal=LogSignal.POSITIVE,
@@ -1150,9 +1296,18 @@ class GuardianService:
                         "raw_account_status": probe.account_status,
                     },
                 )
-                if market_closed_session_idle
-                else snapshot
-            )
+            elif isolated_probe_degraded:
+                decision_snapshot = replace(
+                    snapshot,
+                    probe_status=ProbeStatus.HEALTHY,
+                    log_signal=LogSignal.POSITIVE,
+                    details={
+                        **snapshot.details,
+                        "isolated_probe_degraded": True,
+                        "raw_probe_status": probe.status.value,
+                        "raw_probe_reason": probe.reason,
+                    },
+                )
             qmt_fault = (
                 not decision_snapshot.is_healthy
                 and decision_snapshot.network_available
@@ -1187,7 +1342,7 @@ class GuardianService:
                 )
             )
             rocket_blocks_automatic_qmt_recovery = (
-                snapshot.rocket_active
+                snapshot.rocket_blocks_automatic_recovery
                 and not self.config.recovery.allow_qmt_restart_while_rocket_active
             )
             recovery_otherwise_permitted = (
@@ -1200,8 +1355,9 @@ class GuardianService:
                     and not rocket_blocks_automatic_qmt_recovery
                 ),
                 recovery_block_reason=(
-                    "QMT fault confirmed while Rocket is active; automatic QMT "
-                    "recovery is suppressed and operator intervention is required"
+                    "QMT fault confirmed while Rocket is active with a fresh "
+                    "business heartbeat; automatic QMT recovery is suppressed "
+                    "and operator intervention is required"
                     if recovery_otherwise_permitted
                     and rocket_blocks_automatic_qmt_recovery
                     else None
@@ -1255,6 +1411,7 @@ class GuardianService:
                 schedule,
                 anomalous_idle=anomalous_idle,
                 market_closed_session_idle=market_closed_session_idle,
+                isolated_probe_degraded=isolated_probe_degraded,
             )
             self._publish_status(status)
 
@@ -1283,12 +1440,18 @@ class GuardianService:
         schedule: ScheduleDecision,
         *,
         manual: bool = False,
+        initiator: str = "",
+        remote_channel: str = "",
+        remote_request_id: str = "",
     ) -> ServiceStatus:
         started_at = datetime.now().astimezone()
         operation = self._begin_recovery_operation(
             started_at,
             manual=manual,
             snapshot=snapshot,
+            initiator=initiator,
+            remote_channel=remote_channel,
+            remote_request_id=remote_request_id,
         )
         event_id = str(operation["operation_id"])
         transition = (
@@ -1308,9 +1471,12 @@ class GuardianService:
                 "operator_confirmed": manual,
                 "automatic_recovery_gate_bypassed": manual,
                 "rocket_active": snapshot.rocket_active,
+                "rocket_business_healthy": snapshot.rocket_business_healthy,
                 "trading_phase": snapshot.trading_phase,
                 "reason": (
-                    "operator confirmed QMT restart"
+                    "remote operator confirmed QMT restart"
+                    if remote_channel
+                    else "operator confirmed QMT restart"
                     if manual
                     else self.machine.last_transition.reason
                 ),
@@ -1385,10 +1551,13 @@ class GuardianService:
         self._publish_status(status)
         self.notifications.publish(
             (
-                "QMT人工重启已启动"
+                "QMT远程重启已启动"
+                if remote_channel and result.success
+                else "QMT远程重启失败"
+                if remote_channel
+                else "QMT人工重启已启动"
                 if manual and result.success
-                else "QMT人工重启失败"
-                if manual
+                else "QMT人工重启失败" if manual
                 else "QMT恢复已启动"
                 if result.success
                 else "QMT恢复失败"
@@ -1402,7 +1571,15 @@ class GuardianService:
         )
         return status
 
-    def _record_blocked_qmt_restart(self, reason: str, *, phase: str) -> None:
+    def _record_blocked_qmt_restart(
+        self,
+        reason: str,
+        *,
+        phase: str,
+        initiator: str = "manual",
+        remote_channel: str = "",
+        remote_request_id: str = "",
+    ) -> None:
         at = datetime.now().astimezone()
         operation_id = self._new_identifier("QGO", at)
         self.audit.record(
@@ -1411,7 +1588,7 @@ class GuardianService:
                 "component_id": "qmt_api",
                 "operation_id": operation_id,
                 "operation_type": "qmt_restart",
-                "initiator": "manual",
+                "initiator": initiator,
                 "target_component": "qmt_api",
                 "context": "production",
                 "started_at": at,
@@ -1419,17 +1596,36 @@ class GuardianService:
                 "status": "blocked",
                 "phase": phase,
                 "reason": reason,
+                "remote_channel": remote_channel,
+                "remote_request_id": remote_request_id,
             },
             severity="warning",
             moment=at,
             event_id=operation_id,
         )
 
-    def manual_restart(self, *, operator_confirmed: bool = False) -> ServiceStatus:
+    def manual_restart(
+        self,
+        *,
+        operator_confirmed: bool = False,
+        initiator: str = "manual",
+        remote_channel: str = "",
+        remote_request_id: str = "",
+    ) -> ServiceStatus:
+        allowed_initiators = {"manual", "remote_telegram", "remote_weixin"}
+        if initiator not in allowed_initiators:
+            raise ValueError("unsupported QMT restart initiator")
+        if initiator.startswith("remote_"):
+            expected_channel = initiator.removeprefix("remote_")
+            if remote_channel != expected_channel or not remote_request_id:
+                raise ValueError("remote restart metadata is incomplete")
         if not operator_confirmed:
             self._record_blocked_qmt_restart(
                 "explicit operator confirmation was not supplied",
                 phase="confirmation",
+                initiator=initiator,
+                remote_channel=remote_channel,
+                remote_request_id=remote_request_id,
             )
             raise PermissionError("重启QMT前必须完成确认")
         if self.machine.state in {
@@ -1439,6 +1635,9 @@ class GuardianService:
             self._record_blocked_qmt_restart(
                 "another QMT restart is still executing or awaiting stable verification",
                 phase="exclusive_verification",
+                initiator=initiator,
+                remote_channel=remote_channel,
+                remote_request_id=remote_request_id,
             )
             raise RuntimeError("QMT重启仍在执行或稳定验证中，请等待当前操作完成")
         if self.machine.last_snapshot is None:
@@ -1455,15 +1654,46 @@ class GuardianService:
             probe = self.probe.health()
             log = self.log_monitor.observe(now)
             rocket = self.rocket_monitor.observe(now)
+            network_available = self.network_monitor.is_available()
             trade = self.trade_system_monitor.observe(
-                now, rocket=rocket, active_window=schedule.mode == "active"
+                now,
+                rocket=rocket,
+                active_window=self._rocket_expected_active(now, schedule),
             )
             current_snapshot = replace(
                 snapshot,
                 observed_at=now,
+                process_status=process.status,
+                probe_status=probe.status,
+                log_signal=log.signal,
+                network_available=network_available,
                 rocket_active=rocket.active,
+                rocket_business_healthy=(
+                    rocket.business_healthy
+                    if rocket.business_health_known
+                    else None
+                ),
                 trading_phase=self.calendar.phase_at(now),
+                account_status=probe.account_status,
+                login_requires_manual=log.login_requires_manual,
             )
+            if initiator.startswith("remote_"):
+                blocked_reason = (
+                    "network is unavailable; remote QMT restart is blocked"
+                    if not current_snapshot.network_available
+                    else "QMT requires manual login; remote restart is blocked"
+                    if current_snapshot.login_requires_manual
+                    else ""
+                )
+                if blocked_reason:
+                    self._record_blocked_qmt_restart(
+                        blocked_reason,
+                        phase="remote_preflight",
+                        initiator=initiator,
+                        remote_channel=remote_channel,
+                        remote_request_id=remote_request_id,
+                    )
+                    raise PermissionError(blocked_reason)
             status = self._execute_recovery(
                 current_snapshot,
                 process,
@@ -1473,6 +1703,9 @@ class GuardianService:
                 trade,
                 schedule,
                 manual=True,
+                initiator=initiator,
+                remote_channel=remote_channel,
+                remote_request_id=remote_request_id,
             )
             # A manual restart runs outside the service loop.  Wake the loop
             # immediately so verification is not delayed by the idle-period
@@ -1633,11 +1866,20 @@ class GuardianService:
             event_id=operation_id,
         )
 
-    def operator_check(self, source: str = "all") -> ServiceStatus:
+    def operator_check(
+        self,
+        source: str = "all",
+        *,
+        initiator: str = "manual",
+        remote_channel: str = "",
+        remote_request_id: str = "",
+    ) -> ServiceStatus:
         """Run and audit an operator-requested read-only health check."""
 
         if source not in {"all", "qmt", "trade"}:
             raise ValueError(f"unsupported check source: {source}")
+        if initiator not in {"manual", "remote_telegram", "remote_weixin"}:
+            raise ValueError("unsupported check initiator")
         started_at = datetime.now().astimezone()
         operation_id = self._new_identifier("QGO", started_at)
         target = (
@@ -1650,11 +1892,15 @@ class GuardianService:
         operation = {
             "operation_id": operation_id,
             "operation_type": "manual_check",
-            "initiator": "manual",
+            "initiator": initiator,
             "target_component": target,
             "context": "production",
             "started_at": started_at,
         }
+        if remote_channel:
+            operation["remote_channel"] = remote_channel
+        if remote_request_id:
+            operation["remote_request_id"] = remote_request_id
         self.audit.record(
             "manual_check_requested",
             {

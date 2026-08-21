@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 
 REQUIRED_SUFFIXES = {
     "Quant Guardian/Quant Guardian.exe",
+    "Quant Guardian/Quant Guardian Gateway.exe",
     "Quant Guardian/VERSION",
     "scripts/install-app.ps1",
     "scripts/uninstall-app.ps1",
@@ -25,11 +26,17 @@ REQUIRED_SUFFIXES = {
     "licenses/PYTHON-LICENSE.txt",
     "licenses/PYINSTALLER-COPYING.txt",
     "licenses/QT-FOR-PYTHON-THIRD-PARTY-LICENSES.html",
+    "licenses/QRCODE-LICENSE.txt",
+    "licenses/HERMES-AGENT-MIT.txt",
 }
 FORBIDDEN_NAMES = {
     "quant-guardian.json",
+    "messaging.json",
+    "messaging-secrets.json",
     "monitor-heartbeat.json",
     "recovery_enabled",
+    "remote_control_enabled",
+    ".quant-guardian-install.json",
     "xtminiqmt.exe",
     "xtitclient.exe",
     "quantclass.exe",
@@ -50,19 +57,32 @@ FORBIDDEN_SUFFIXES = {
     ".pfx",
 }
 WINDOWS_USER_PATH = re.compile(rb"(?i)[a-z]:\\users\\[^\\\r\n\x00]+")
+TELEGRAM_BOT_TOKEN = re.compile(rb"(?<![A-Za-z0-9_])\d{5,16}:[A-Za-z0-9_-]{20,256}")
 TEXT_SUFFIXES = {
+    ".bat",
     ".cfg",
+    ".cmd",
+    ".csv",
     ".html",
     ".ini",
     ".json",
     ".md",
+    ".py",
     ".ps1",
+    ".spec",
     ".toml",
+    ".tsv",
     ".txt",
     ".xml",
     ".yaml",
     ".yml",
 }
+TEXT_NAMES = {"license", "notice", "version"}
+
+
+def _is_text_entry(name: str) -> bool:
+    pure = PurePosixPath(name)
+    return pure.suffix.casefold() in TEXT_SUFFIXES or pure.name.casefold() in TEXT_NAMES
 
 
 def _relative_names(archive: zipfile.ZipFile) -> tuple[str, list[str]]:
@@ -122,7 +142,10 @@ def validate_zip(path: Path, *, forbidden_paths: tuple[str, ...] = ()) -> None:
                 raise ValueError(
                     f"release ZIP contains a forbidden local path: {info.filename}"
                 )
-            if PurePosixPath(info.filename).suffix.casefold() in TEXT_SUFFIXES and WINDOWS_USER_PATH.search(content):
+            is_text = _is_text_entry(info.filename)
+            if is_text and TELEGRAM_BOT_TOKEN.search(content):
+                raise ValueError(f"release ZIP contains a Telegram bot token: {info.filename}")
+            if is_text and WINDOWS_USER_PATH.search(content):
                 raise ValueError(f"release ZIP contains a Windows user path: {info.filename}")
         sbom_name = next(
             name for name in archive.namelist() if name.endswith("/SBOM.cdx.json")

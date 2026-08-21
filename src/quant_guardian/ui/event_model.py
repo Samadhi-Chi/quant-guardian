@@ -105,11 +105,14 @@ class OperationTableModel(QAbstractTableModel):
         "recovery_control": "恢复控制",
         "settings_change": "保存设置",
         "diagnostic_export": "导出诊断",
+        "remote_command": "远程命令",
     }
     INITIATOR_NAMES = {
         "automatic": "自动恢复",
         "manual": "人工",
         "watchdog": "看门狗",
+        "remote_telegram": "Telegram 远程",
+        "remote_weixin": "个人微信远程",
     }
     STATUS_NAMES = {
         "succeeded": "验证成功",
@@ -118,6 +121,8 @@ class OperationTableModel(QAbstractTableModel):
         "verifying": "验证中",
         "in_progress": "执行中",
         "cancelled": "已取消",
+        "awaiting_confirmation": "待确认",
+        "sent": "已发送",
     }
 
     def __init__(self, parent=None) -> None:
@@ -200,4 +205,90 @@ class OperationTableModel(QAbstractTableModel):
             )
         if role == Qt.ItemDataRole.UserRole:
             return operation
+        return None
+
+
+class GatewayActivityTableModel(QAbstractTableModel):
+    COLUMNS = ("时间", "通道", "类型", "动作", "结果", "说明")
+
+    CHANNEL_NAMES = {"telegram": "Telegram", "weixin": "个人微信"}
+    KIND_NAMES = {"command": "远程命令", "delivery": "消息播报"}
+    ACTION_NAMES = {
+        "status": "查询状态",
+        "check": "立即检测",
+        "incidents": "查询故障",
+        "operations": "查询操作",
+        "restart_qmt": "重启 QMT",
+        "pair": "绑定私聊",
+        "message": "发送消息",
+    }
+    STATUS_NAMES = {
+        "sent": "已发送",
+        "succeeded": "成功",
+        "accepted": "已受理",
+        "failed": "失败",
+        "blocked": "已阻断",
+        "cancelled": "已取消",
+        "pending": "待发送",
+        "delivering": "发送中",
+        "awaiting_confirmation": "待确认",
+    }
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.rows: list[dict[str, Any]] = []
+
+    def set_rows(self, rows: list[dict[str, Any]]) -> None:
+        self.beginResetModel()
+        self.rows = list(rows)
+        self.endResetModel()
+
+    def rowCount(self, parent=QModelIndex()) -> int:  # noqa: N802
+        return 0 if parent.isValid() else len(self.rows)
+
+    def columnCount(self, parent=QModelIndex()) -> int:  # noqa: N802
+        return 0 if parent.isValid() else len(self.COLUMNS)
+
+    def headerData(self, section: int, orientation, role=Qt.ItemDataRole.DisplayRole):  # noqa: N802
+        if (
+            role == Qt.ItemDataRole.DisplayRole
+            and orientation == Qt.Orientation.Horizontal
+            and 0 <= section < len(self.COLUMNS)
+        ):
+            return self.COLUMNS[section]
+        return None
+
+    def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid() or not (0 <= index.row() < len(self.rows)):
+            return None
+        row = self.rows[index.row()]
+        status = str(row.get("status") or "")
+        if role in {Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole}:
+            time_value = str(row.get("time") or "").replace("T", " ")[:19]
+            if len(time_value) >= 19:
+                time_value = time_value[5:19]
+            channel = str(row.get("channel") or "")
+            kind = str(row.get("kind") or "")
+            action = str(row.get("action") or "")
+            values = (
+                time_value,
+                self.CHANNEL_NAMES.get(channel, channel),
+                self.KIND_NAMES.get(kind, kind),
+                self.ACTION_NAMES.get(action, action),
+                self.STATUS_NAMES.get(status, status),
+                str(row.get("reason") or ""),
+            )
+            return values[index.column()]
+        if role == Qt.ItemDataRole.ForegroundRole and index.column() == 4:
+            return QColor(
+                LIGHT["green"]
+                if status in {"sent", "succeeded"}
+                else LIGHT["red"]
+                if status == "failed"
+                else LIGHT["amber"]
+                if status in {"blocked", "pending", "delivering", "awaiting_confirmation"}
+                else LIGHT["text_muted"]
+            )
+        if role == Qt.ItemDataRole.UserRole:
+            return row
         return None
