@@ -67,7 +67,7 @@ class RemoteControlConfig:
     allow_operations: bool = True
     qmt_restart_enabled: bool = True
     quantclass_restart_enabled: bool = False
-    confirmation_ttl_seconds: int = 60
+    confirmation_ttl_seconds: int = 300
     pairing_ttl_seconds: int = 300
     max_commands_per_minute: int = 8
     max_restart_requests_per_hour: int = 2

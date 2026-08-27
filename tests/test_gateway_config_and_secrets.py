@@ -31,6 +31,7 @@ class GatewayConfigAndSecretsTests(unittest.TestCase):
             self.assertEqual(loaded.telegram.allowed_user_ids, ["42"])
             self.assertFalse(loaded.weixin.group_enabled)
             self.assertFalse(loaded.remote_control.quantclass_restart_enabled)
+            self.assertEqual(loaded.remote_control.confirmation_ttl_seconds, 300)
             document = json.loads(path.read_text(encoding="utf-8"))
             self.assertNotIn("token", json.dumps(document).casefold())
 

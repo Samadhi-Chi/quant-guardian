@@ -153,6 +153,7 @@ class GatewayCommandTests(unittest.TestCase):
         reply = self.processor.process(
             self.message("重启 QMT", channel="weixin", sender="wx-owner")
         )
+        self.assertIn("确认有效期：300 秒", reply.text)
         code = reply.text.rsplit(" ", 1)[-1]
         self.assertRegex(code, r"QG-\d{4}")
         confirmed = self.processor.process(
