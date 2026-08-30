@@ -24,6 +24,8 @@ from quant_guardian.service import GuardianService
 from quant_guardian.ui.design_system import install_ui_font
 from quant_guardian.ui.main_window import MainWindow
 
+STALE_LOCK_TIME_MS = 60_000
+
 
 def run_gui(
     config: AppConfig,
@@ -58,7 +60,7 @@ def run_gui(
         for path in paths.values():
             path.mkdir(parents=True, exist_ok=True)
     lock = QLockFile(str(paths["state"] / "quant-guardian.lock"))
-    lock.setStaleLockTime(0)
+    lock.setStaleLockTime(STALE_LOCK_TIME_MS)
     if not lock.tryLock(100):
         QMessageBox.information(
             None,

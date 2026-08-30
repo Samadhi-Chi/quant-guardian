@@ -243,6 +243,7 @@ class GuardianService:
         self._monitor_consecutive_errors = 0
         self._last_monitor_success_at: datetime | None = None
         self._expected_monitor_check_at: datetime | None = None
+        self._expected_monitor_interval_seconds: float | None = None
         self._monitor_heartbeat_path = directories["state"] / "monitor-heartbeat.json"
         self._last_signature: tuple[object, ...] | None = None
         self._last_trade_signature: tuple[object, ...] | None = None
@@ -2296,16 +2297,22 @@ class GuardianService:
             except Exception:
                 continue
 
+    def _monitoring_gap_tolerance_seconds(self) -> float:
+        scheduled_interval = self._expected_monitor_interval_seconds
+        interval = (
+            scheduled_interval
+            if scheduled_interval is not None and scheduled_interval > 0
+            else float(self.config.monitoring.active_interval_seconds)
+        )
+        return max(5.0, float(interval) * 2)
+
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
             loop_started = datetime.now().astimezone()
             expected = self._expected_monitor_check_at
             if expected is not None:
                 delay = (loop_started - expected).total_seconds()
-                tolerance = max(
-                    5.0,
-                    float(self.config.monitoring.active_interval_seconds) * 2,
-                )
+                tolerance = self._monitoring_gap_tolerance_seconds()
                 if delay > tolerance:
                     self.audit.record(
                         "monitoring_gap",
@@ -2332,6 +2339,10 @@ class GuardianService:
                     at=at,
                     retry_seconds=retry_seconds,
                 )
+                self._expected_monitor_interval_seconds = retry_seconds
+                self._expected_monitor_check_at = at + timedelta(
+                    seconds=retry_seconds
+                )
                 self._wake_event.wait(retry_seconds)
                 self._wake_event.clear()
                 continue
@@ -2353,6 +2364,15 @@ class GuardianService:
                 next_check_at = datetime.now().astimezone() + timedelta(
                     seconds=seconds
                 )
+            interval = status.schedule.get("interval_seconds")
+            try:
+                scheduled_seconds = float(interval)
+            except (TypeError, ValueError):
+                scheduled_seconds = max(
+                    0.1,
+                    (next_check_at - datetime.now().astimezone()).total_seconds(),
+                )
+            self._expected_monitor_interval_seconds = max(0.1, scheduled_seconds)
             self._expected_monitor_check_at = next_check_at
             seconds = (next_check_at - datetime.now().astimezone()).total_seconds()
             self._wake_event.wait(max(0.1, seconds))

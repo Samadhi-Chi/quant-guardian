@@ -1035,6 +1035,33 @@ class ServiceTests(unittest.TestCase):
             finally:
                 service.stop()
 
+    def test_monitoring_gap_tolerance_tracks_the_scheduled_interval(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"LOCALAPPDATA": directory}
+        ):
+            config = self.make_config()
+            service = GuardianService(
+                config,
+                process_monitor=FakeProcessMonitor(),
+                log_monitor=FakeLogMonitor(),
+                network_monitor=FakeNetworkMonitor(),
+                rocket_monitor=FakeRocketMonitor(),
+                probe=FakeProbe(),
+                recovery=FakeRecovery(),
+                audit=AuditLogger(Path(directory) / "logs"),
+                safety_gate=SafetyGate(config, Path(directory) / "sentinel"),
+                now=BASE,
+            )
+            try:
+                service._expected_monitor_interval_seconds = 3_600
+                self.assertEqual(service._monitoring_gap_tolerance_seconds(), 7_200)
+                service._expected_monitor_interval_seconds = 15
+                self.assertEqual(service._monitoring_gap_tolerance_seconds(), 30)
+                service._expected_monitor_interval_seconds = 5
+                self.assertEqual(service._monitoring_gap_tolerance_seconds(), 10)
+            finally:
+                service.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -20,7 +20,12 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
-from quant_guardian.gateway.channels.base import AuthenticationError, ChannelAdapter, ChannelError
+from quant_guardian.gateway.channels.base import (
+    AuthenticationError,
+    ChannelAdapter,
+    ChannelError,
+    UserActionRequired,
+)
 from quant_guardian.gateway.channels.https import open_trusted_https
 from quant_guardian.gateway.config import WeixinGatewayConfig, is_trusted_weixin_base_url
 from quant_guardian.gateway.models import InboundMessage, OutboundMessage
@@ -39,6 +44,9 @@ ITEM_TEXT = 1
 MSG_TYPE_BOT = 2
 MSG_STATE_FINISH = 2
 SESSION_EXPIRED_ERRCODE = -14
+CONTEXT_OR_PARAMETER_ERRCODE = -2
+CONTEXT_REFRESH_REQUIRED = "微信会话上下文已过期，请先给机器人发送任意一条消息以恢复播报"
+CONTEXT_ERROR_MESSAGES = frozenset({"prepare failed", "unknown error"})
 MAX_API_RESPONSE_BYTES = 2_000_000
 MAX_QR_CONTENT_LENGTH = 4_096
 
@@ -188,20 +196,86 @@ class WeixinAdapter(ChannelAdapter):
         self.store = store
         self.vault = vault
         self._context: dict[str, str] = {}
+        self._context_lock = threading.RLock()
+        self._context_refresh_peers: set[str] = set()
+        configured_peers = {
+            str(peer).strip()
+            for peer in (*self.config.allowed_user_ids, self.config.home_chat_id)
+            if str(peer).strip()
+        }
+        for peer in configured_peers:
+            if self.store.get_meta(self._context_refresh_key(peer)) == "1":
+                self._context_refresh_peers.add(peer)
 
     def _context_key(self, peer: str) -> str:
         import hashlib
 
         return "weixin_context_" + hashlib.sha256(peer.encode("utf-8")).hexdigest()[:24]
 
+    def _context_refresh_key(self, peer: str) -> str:
+        import hashlib
+
+        digest = hashlib.sha256(peer.encode("utf-8")).hexdigest()[:24]
+        return f"weixin.context_refresh_required.{digest}"
+
     def _get_context(self, peer: str) -> str:
-        if peer not in self._context:
-            self._context[peer] = self.vault.get(self._context_key(peer))
-        return self._context.get(peer, "")
+        with self._context_lock:
+            if peer not in self._context:
+                self._context[peer] = self.vault.get(self._context_key(peer))
+            return self._context.get(peer, "")
 
     def _set_context(self, peer: str, token: str) -> None:
-        self._context[peer] = token
-        self.vault.set(self._context_key(peer), token)
+        with self._context_lock:
+            was_waiting = peer in self._context_refresh_peers
+            self._context[peer] = token
+            self._context_refresh_peers.discard(peer)
+            self.vault.set(self._context_key(peer), token)
+            self.store.set_meta(self._context_refresh_key(peer), "0")
+        if was_waiting:
+            self.store.update_channel_state(
+                self.name,
+                "connected",
+                identity=self.config.account_id[:12],
+            )
+
+    def _clear_context_refresh(self, peer: str) -> None:
+        with self._context_lock:
+            self._context_refresh_peers.discard(peer)
+            self.store.set_meta(self._context_refresh_key(peer), "0")
+
+    def _clear_context(self, peer: str) -> None:
+        with self._context_lock:
+            self.vault.delete(self._context_key(peer))
+            self._context[peer] = ""
+
+    def _require_context_refresh(self, peer: str, detail: str) -> None:
+        self._clear_context(peer)
+        with self._context_lock:
+            self._context_refresh_peers.add(peer)
+            self.store.set_meta(self._context_refresh_key(peer), "1")
+        self.store.update_channel_state(
+            self.name,
+            "attention_required",
+            identity=self.config.account_id[:12],
+            error=f"{CONTEXT_REFRESH_REQUIRED}；{detail}"[:500],
+        )
+
+    def _poll_state(self) -> tuple[str, str]:
+        with self._context_lock:
+            waiting = bool(self._context_refresh_peers)
+        return (
+            ("attention_required", CONTEXT_REFRESH_REQUIRED)
+            if waiting
+            else ("connected", "")
+        )
+
+    @staticmethod
+    def _response_error(response: dict[str, Any]) -> tuple[Any, Any, str]:
+        ret = response.get("ret", 0)
+        errcode = response.get("errcode", 0)
+        raw = str(response.get("errmsg") or response.get("msg") or "unknown error")
+        errmsg = " ".join(raw.split())[:160]
+        return ret, errcode, errmsg
 
     def run(
         self,
@@ -216,8 +290,12 @@ class WeixinAdapter(ChannelAdapter):
         failures = 0
         sync_buf = self.store.get_meta("weixin.sync_buf", "")
         timeout = self.config.poll_timeout_seconds
+        state, state_error = self._poll_state()
         self.store.update_channel_state(
-            self.name, "connected", identity=self.config.account_id[:12]
+            self.name,
+            state,
+            identity=self.config.account_id[:12],
+            error=state_error,
         )
         while not stop_event.is_set():
             try:
@@ -238,17 +316,26 @@ class WeixinAdapter(ChannelAdapter):
                         raise AuthenticationError("Weixin iLink login expired; scan QR again")
                     raise ChannelError(f"Weixin iLink getupdates failed: {ret or errcode}")
                 failures = 0
+                state, state_error = self._poll_state()
                 self.store.update_channel_state(
                     self.name,
-                    "connected",
+                    state,
                     identity=self.config.account_id[:12],
+                    error=state_error,
                 )
                 new_sync = str(response.get("get_updates_buf") or "")
                 for raw in response.get("msgs") or []:
                     message = self._inbound(raw)
                     if message is not None:
                         on_message(message)
-                        self.store.update_channel_state(self.name, "connected", received=True)
+                        state, state_error = self._poll_state()
+                        self.store.update_channel_state(
+                            self.name,
+                            state,
+                            identity=self.config.account_id[:12],
+                            received=True,
+                            error=state_error,
+                        )
                 if new_sync:
                     sync_buf = new_sync
                     self.store.set_meta("weixin.sync_buf", sync_buf)
@@ -322,7 +409,8 @@ class WeixinAdapter(ChannelAdapter):
             raise AuthenticationError("Weixin login is missing")
         context = self._get_context(message.chat_id)
         last_id = ""
-        for index, chunk in enumerate(self._chunks(message.text)):
+        chunks = self._chunks(message.text)
+        for index, chunk in enumerate(chunks):
             client_id = f"quant-guardian-weixin-{uuid.uuid4().hex}"
             body: dict[str, Any] = {
                 "from_user_id": "",
@@ -341,11 +429,17 @@ class WeixinAdapter(ChannelAdapter):
                 payload={"msg": body},
                 timeout=20,
             )
-            ret = response.get("ret", 0)
-            errcode = response.get("errcode", 0)
-            if (ret == SESSION_EXPIRED_ERRCODE or errcode == SESSION_EXPIRED_ERRCODE) and context:
-                self.vault.delete(self._context_key(message.chat_id))
-                self._context[message.chat_id] = ""
+            ret, errcode, errmsg = self._response_error(response)
+            stale_context = (
+                ret == SESSION_EXPIRED_ERRCODE
+                or errcode == SESSION_EXPIRED_ERRCODE
+                or (
+                    (ret == CONTEXT_OR_PARAMETER_ERRCODE or errcode == CONTEXT_OR_PARAMETER_ERRCODE)
+                    and errmsg.casefold() in CONTEXT_ERROR_MESSAGES
+                )
+            )
+            if stale_context and context:
+                self._clear_context(message.chat_id)
                 context = ""
                 body.pop("context_token", None)
                 response = _request_json(
@@ -355,12 +449,27 @@ class WeixinAdapter(ChannelAdapter):
                     payload={"msg": body},
                     timeout=20,
                 )
-                ret = response.get("ret", 0)
-                errcode = response.get("errcode", 0)
+                ret, errcode, errmsg = self._response_error(response)
             if ret not in {0, None} or errcode not in {0, None}:
-                raise ChannelError(f"Weixin iLink send failed: {ret or errcode}")
+                detail = f"ret={ret}, errcode={errcode}, errmsg={errmsg}"
+                if (
+                    (ret == CONTEXT_OR_PARAMETER_ERRCODE or errcode == CONTEXT_OR_PARAMETER_ERRCODE)
+                    and errmsg.casefold() in CONTEXT_ERROR_MESSAGES
+                ):
+                    self._require_context_refresh(message.chat_id, detail)
+                    raise UserActionRequired(f"{CONTEXT_REFRESH_REQUIRED}（iLink {detail}）")
+                if ret == SESSION_EXPIRED_ERRCODE or errcode == SESSION_EXPIRED_ERRCODE:
+                    self.store.update_channel_state(
+                        self.name,
+                        "auth_required",
+                        identity=self.config.account_id[:12],
+                        error="Weixin iLink login expired; scan QR again",
+                    )
+                    raise AuthenticationError("Weixin iLink login expired; scan QR again")
+                raise ChannelError(f"Weixin iLink send failed: {detail}")
             last_id = client_id
-            if index < len(self._chunks(message.text)) - 1:
+            if index < len(chunks) - 1:
                 time.sleep(1.0)
+        self._clear_context_refresh(message.chat_id)
         self.store.update_channel_state(self.name, "connected", sent=True)
         return last_id

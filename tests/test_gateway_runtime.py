@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from quant_guardian.gateway.channels.base import ChannelAdapter
+from quant_guardian.gateway.channels.base import ChannelAdapter, UserActionRequired
 from quant_guardian.gateway.config import MessagingConfig, save_messaging_config
 from quant_guardian.gateway.models import InboundMessage, OutboundMessage
 from quant_guardian.gateway.runtime import GatewayRuntime
@@ -71,6 +71,12 @@ class AuthRequiredAdapter(FakeAdapter):
             "auth_required",
             error="login required",
         )
+
+
+class UserActionAdapter(FakeAdapter):
+    def send(self, message: OutboundMessage) -> str:
+        del message
+        raise UserActionRequired("send any message to refresh the channel context")
 
 
 class GatewayRuntimeTests(unittest.TestCase):
@@ -235,6 +241,35 @@ class GatewayRuntimeTests(unittest.TestCase):
             self.assertTrue(adapter.started.wait(1))
             time.sleep(0.08)
         self.assertEqual(adapter.run_count, 1)
+
+    def test_dispatcher_stops_retrying_when_channel_needs_user_action(self) -> None:
+        adapter = UserActionAdapter("weixin")
+        self.adapters["weixin"] = adapter
+        self.store.enqueue_outbound(
+            channel="weixin",
+            chat_id="owner",
+            text="test",
+            idempotency_key="test:user-action",
+        )
+        self.runtime.start()
+        deadline = time.monotonic() + 1
+        row = {}
+        while time.monotonic() < deadline:
+            row = next(
+                (
+                    item
+                    for item in self.store.activity(limit=10)
+                    if item["item_id"] == "1"
+                ),
+                {},
+            )
+            if row.get("status") == "failed":
+                break
+            time.sleep(0.01)
+        self.assertEqual(row.get("status"), "failed")
+        state = {item["channel"]: item for item in self.store.channel_states()}["weixin"]
+        self.assertEqual(state["status"], "attention_required")
+        self.assertIn("refresh", state["last_error"])
 
 
 if __name__ == "__main__":

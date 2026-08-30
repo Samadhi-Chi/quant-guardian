@@ -15,6 +15,10 @@ class AuthenticationError(ChannelError):
     pass
 
 
+class UserActionRequired(ChannelError):
+    """A channel is online but cannot continue until its owner intervenes."""
+
+
 class ChannelAdapter(ABC):
     name: str
 

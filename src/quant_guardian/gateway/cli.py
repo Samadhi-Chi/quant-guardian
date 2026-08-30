@@ -17,6 +17,8 @@ from quant_guardian.gateway.config import (
 )
 from quant_guardian.gateway.runtime import GatewayRuntime
 
+STALE_LOCK_TIME_MS = 60_000
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -41,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     lock_path = app_data_dir() / "state" / "quant-guardian-gateway.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock = QLockFile(str(lock_path))
-    lock.setStaleLockTime(0)
+    lock.setStaleLockTime(STALE_LOCK_TIME_MS)
     if not lock.tryLock(100):
         return 0
 

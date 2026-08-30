@@ -1609,10 +1609,15 @@ class MainWindow(QMainWindow):
         }
 
         def apply_pill(pill: PillLabel, channel: str, configured: bool) -> None:
-            state = str((states.get(channel) or {}).get("status") or "")
+            channel_state = states.get(channel) or {}
+            state = str(channel_state.get("status") or "")
+            error = str(channel_state.get("last_error") or "").strip()
             if state == "connected":
                 pill.setText("Telegram 已连接" if channel == "telegram" else "微信已连接")
                 pill.set_tone("success")
+            elif state == "attention_required":
+                pill.setText("Telegram 需处理" if channel == "telegram" else "微信需刷新")
+                pill.set_tone("warning")
             elif state == "auth_required":
                 pill.setText("Telegram 需认证" if channel == "telegram" else "微信需扫码")
                 pill.set_tone("warning")
@@ -1626,6 +1631,7 @@ class MainWindow(QMainWindow):
                     else ("Telegram 未配置" if channel == "telegram" else "微信未配置")
                 )
                 pill.set_tone("info" if configured else "neutral")
+            pill.setToolTip(error)
 
         apply_pill(
             self.telegram_status_pill,

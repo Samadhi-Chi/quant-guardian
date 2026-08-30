@@ -33,6 +33,9 @@ class ReleaseContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("Get-Command python -CommandType Application", build_script)
+        self.assertIn("$OriginalPath = $env:Path", build_script)
+        self.assertIn("$env:Path = $TrustedPathEntries -join [IO.Path]::PathSeparator", build_script)
+        self.assertIn("$env:Path = $OriginalPath", build_script)
         self.assertIn("[string]$Python", package_script)
         ci_python_argument = (
             "-Python (Get-Command python -CommandType Application "

@@ -4,7 +4,12 @@ import hashlib
 import threading
 from pathlib import Path
 
-from quant_guardian.gateway.channels.base import ChannelAdapter, ChannelError
+from quant_guardian.gateway.channels.base import (
+    AuthenticationError,
+    ChannelAdapter,
+    ChannelError,
+    UserActionRequired,
+)
 from quant_guardian.gateway.channels.telegram import TelegramAdapter
 from quant_guardian.gateway.channels.weixin import WeixinAdapter
 from quant_guardian.gateway.commands import CommandProcessor, inbound_text_hash
@@ -279,6 +284,28 @@ class GatewayRuntime:
                     had_work = True
                     try:
                         adapter.send(message)
+                    except UserActionRequired as exc:
+                        self.store.update_channel_state(
+                            channel,
+                            "attention_required",
+                            error=str(exc),
+                        )
+                        self.store.complete_outbound(
+                            message.message_id,
+                            success=False,
+                            error=str(exc),
+                        )
+                    except AuthenticationError as exc:
+                        self.store.update_channel_state(
+                            channel,
+                            "auth_required",
+                            error=str(exc),
+                        )
+                        self.store.complete_outbound(
+                            message.message_id,
+                            success=False,
+                            error=str(exc),
+                        )
                     except ChannelError as exc:
                         retry = min(300, 5 * (2 ** min(message.attempts, 6)))
                         self.store.complete_outbound(

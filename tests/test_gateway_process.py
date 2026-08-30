@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from quant_guardian.gateway.cli import main
+from quant_guardian.gateway.cli import STALE_LOCK_TIME_MS, main
 from quant_guardian.gateway.config import MessagingConfig, save_messaging_config
 from quant_guardian.gateway.supervisor import GatewaySupervisor
 
@@ -49,6 +49,7 @@ class GatewayProcessTests(unittest.TestCase):
                 self.assertEqual(main(["--config", str(path)]), 0)
             runtime.start.assert_called_once()
             runtime.stop.assert_called_once()
+            lock.setStaleLockTime.assert_called_with(STALE_LOCK_TIME_MS)
             lock.unlock.assert_called_once()
 
             lock.tryLock.return_value = False

@@ -8,10 +8,15 @@ import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from quant_guardian.gateway.channels.base import AuthenticationError, ChannelError
+from quant_guardian.gateway.channels.base import (
+    AuthenticationError,
+    ChannelError,
+    UserActionRequired,
+)
 from quant_guardian.gateway.channels.https import open_trusted_https
 from quant_guardian.gateway.channels.telegram import TelegramAdapter
 from quant_guardian.gateway.channels.weixin import (
+    CONTEXT_REFRESH_REQUIRED,
     SESSION_EXPIRED_ERRCODE,
     WeixinAdapter,
     _request_json,
@@ -237,7 +242,11 @@ class GatewayChannelTests(unittest.TestCase):
             )
 
     def test_weixin_private_text_context_and_group_rejection(self) -> None:
-        config = WeixinGatewayConfig(account_id="bot@im.bot")
+        config = WeixinGatewayConfig(
+            account_id="bot@im.bot",
+            allowed_user_ids=["owner"],
+            home_chat_id="owner",
+        )
         adapter = WeixinAdapter(config, token="token", store=self.store, vault=self.vault)
         group = {
             "message_id": "g1",
@@ -299,6 +308,60 @@ class GatewayChannelTests(unittest.TestCase):
         self.assertEqual(payloads[0]["msg"]["context_token"], "old-context")
         self.assertNotIn("context_token", payloads[1]["msg"])
         self.assertEqual(adapter._get_context("owner"), "")
+
+    def test_weixin_prepare_failed_requires_fresh_inbound_context(self) -> None:
+        config = WeixinGatewayConfig(
+            account_id="bot@im.bot",
+            allowed_user_ids=["owner"],
+            home_chat_id="owner",
+        )
+        adapter = WeixinAdapter(config, token="token", store=self.store, vault=self.vault)
+        adapter._set_context("owner", "old-context")
+        payloads = []
+
+        def request(**kwargs):
+            payloads.append(json.loads(json.dumps(kwargs["payload"])))
+            return {"ret": -2, "errmsg": "prepare failed"}
+
+        with (
+            patch("quant_guardian.gateway.channels.weixin._request_json", side_effect=request),
+            self.assertRaisesRegex(UserActionRequired, "发送任意一条消息"),
+        ):
+            adapter.send(OutboundMessage(1, "weixin", "owner", "状态正常"))
+
+        self.assertEqual(len(payloads), 2)
+        self.assertEqual(payloads[0]["msg"]["context_token"], "old-context")
+        self.assertNotIn("context_token", payloads[1]["msg"])
+        self.assertEqual(adapter._get_context("owner"), "")
+        state = {item["channel"]: item for item in self.store.channel_states()}["weixin"]
+        self.assertEqual(state["status"], "attention_required")
+        self.assertIn("prepare failed", state["last_error"])
+
+        persisted = WeixinAdapter(config, token="token", store=self.store, vault=self.vault)
+        stop = MagicMock()
+        stop.is_set.side_effect = [False, True]
+        with patch(
+            "quant_guardian.gateway.channels.weixin._request_json",
+            return_value={"ret": 0, "get_updates_buf": "next", "msgs": []},
+        ):
+            persisted.run(stop, lambda _message: None)
+        state = {item["channel"]: item for item in self.store.channel_states()}["weixin"]
+        self.assertEqual(state["status"], "attention_required")
+        self.assertEqual(state["last_error"], CONTEXT_REFRESH_REQUIRED)
+
+        persisted._inbound(
+            {
+                "message_id": "d2",
+                "from_user_id": "owner",
+                "to_user_id": "bot@im.bot",
+                "context_token": "fresh-context",
+                "item_list": [{"type": 1, "text_item": {"text": "状态"}}],
+            }
+        )
+        state = {item["channel"]: item for item in self.store.channel_states()}["weixin"]
+        self.assertEqual(state["status"], "connected")
+        self.assertEqual(state["last_error"], "")
+        self.assertEqual(persisted._get_context("owner"), "fresh-context")
 
 
 if __name__ == "__main__":
