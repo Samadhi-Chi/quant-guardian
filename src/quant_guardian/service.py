@@ -183,9 +183,23 @@ class GuardianService:
         audit: AuditLogger | None = None,
         safety_gate: SafetyGate | None = None,
         now: datetime | None = None,
+        runtime_root: Path | None = None,
     ) -> None:
         self.config = config
-        directories = ensure_runtime_directories()
+        if runtime_root is None:
+            directories = ensure_runtime_directories()
+        else:
+            root = runtime_root.resolve()
+            directories = {
+                "root": root,
+                "config": root / "config",
+                "state": root / "state",
+                "logs": root / "logs",
+                "diagnostics": root / "diagnostics",
+                "cache": root / "cache",
+            }
+            for path in directories.values():
+                path.mkdir(parents=True, exist_ok=True)
         self.audit = audit or AuditLogger(
             directories["logs"], config.diagnostics.retention_days
         )
@@ -198,7 +212,12 @@ class GuardianService:
         )
         if hasattr(self.audit, "subscribe"):
             self.audit.subscribe(self.store.enqueue_event)
-        self.safety_gate = safety_gate or SafetyGate(config)
+        self.safety_gate = safety_gate or SafetyGate(
+            config,
+            None
+            if runtime_root is None
+            else directories["state"] / "RECOVERY_ENABLED",
+        )
         self.process_monitor = process_monitor or QmtProcessMonitor(config.qmt)
         self.log_monitor = log_monitor or QmtLogMonitor(
             Path(config.qmt.log_directory), config.thresholds.log_stale_seconds
@@ -240,6 +259,7 @@ class GuardianService:
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._monitor_heartbeat_owned = False
         self._monitor_consecutive_errors = 0
         self._last_monitor_success_at: datetime | None = None
         self._expected_monitor_check_at: datetime | None = None
@@ -2189,6 +2209,7 @@ class GuardianService:
         if self._thread and self._thread.is_alive():
             return
         self._stop_event.clear()
+        self._monitor_heartbeat_owned = True
         self._thread = threading.Thread(
             target=self._run_loop,
             name="quant-guardian-monitor",
@@ -2420,9 +2441,11 @@ class GuardianService:
         self._wake_event.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=10)
-        self._write_monitor_heartbeat(
-            datetime.now().astimezone(), state="stopped"
-        )
+        if self._monitor_heartbeat_owned:
+            self._write_monitor_heartbeat(
+                datetime.now().astimezone(), state="stopped"
+            )
+            self._monitor_heartbeat_owned = False
         self.business.stop()
         self.probe.stop()
         self.store.request_cleanup()

@@ -1053,6 +1053,70 @@ class ServiceTests(unittest.TestCase):
             finally:
                 service.stop()
 
+    def test_unstarted_service_does_not_overwrite_primary_monitor_heartbeat(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"LOCALAPPDATA": directory}
+        ):
+            config = self.make_config()
+            heartbeat = (
+                Path(directory)
+                / "QuantGuardian"
+                / "state"
+                / "monitor-heartbeat.json"
+            )
+            heartbeat.parent.mkdir(parents=True)
+            active_document = '{"state":"healthy","thread_alive":true}\n'
+            heartbeat.write_text(active_document, encoding="utf-8")
+            service = GuardianService(
+                config,
+                process_monitor=FakeProcessMonitor(),
+                log_monitor=FakeLogMonitor(),
+                network_monitor=FakeNetworkMonitor(),
+                rocket_monitor=FakeRocketMonitor(),
+                probe=FakeProbe(),
+                recovery=FakeRecovery(),
+                audit=AuditLogger(Path(directory) / "logs"),
+                safety_gate=SafetyGate(config, Path(directory) / "sentinel"),
+                now=BASE,
+            )
+
+            service.stop()
+
+            self.assertEqual(heartbeat.read_text(encoding="utf-8"), active_document)
+
+    def test_temporary_runtime_isolates_monitor_heartbeat_and_database(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"LOCALAPPDATA": directory}
+        ):
+            config = self.make_config()
+            runtime_root = Path(directory) / "smoke-runtime"
+            primary_root = Path(directory) / "QuantGuardian"
+            service = GuardianService(
+                config,
+                process_monitor=FakeProcessMonitor(),
+                log_monitor=FakeLogMonitor(),
+                network_monitor=FakeNetworkMonitor(),
+                rocket_monitor=FakeRocketMonitor(),
+                probe=FakeProbe(),
+                recovery=FakeRecovery(),
+                audit=AuditLogger(runtime_root / "logs"),
+                now=BASE,
+                runtime_root=runtime_root,
+            )
+            try:
+                self.assertEqual(service._runtime_root, runtime_root.resolve())
+                self.assertTrue((runtime_root / "monitoring.db").is_file())
+                self.assertFalse((primary_root / "monitoring.db").exists())
+                self.assertFalse(
+                    (primary_root / "state" / "monitor-heartbeat.json").exists()
+                )
+            finally:
+                service.stop()
+
+            self.assertFalse(
+                (runtime_root / "state" / "monitor-heartbeat.json").exists()
+            )
+
     def test_watchdog_can_restart_an_unexpectedly_dead_monitor_thread(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             os.environ, {"LOCALAPPDATA": directory}
