@@ -68,11 +68,14 @@ jobs:
       - name: Dependency audit
         run: python -m pip_audit -r requirements-lock.txt --strict
       - name: Version contract
-        run: python scripts/check_version.py --tag v0.3.0-beta.1
+        run: python scripts/check_version.py --tag v0.4.0-beta.1
 
   secrets:
     name: secrets
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - name: Check out full history
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -81,6 +84,9 @@ jobs:
           persist-credentials: false
       - name: Gitleaks
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
 
   package:
     name: package
@@ -106,20 +112,25 @@ jobs:
           python -m pip install -e . --no-deps
       - name: Build
         shell: powershell
-        run: .\scripts\build.ps1 -Python (Join-Path $env:pythonLocation "python.exe")
+        run: .\scripts\build.ps1 -Python (Get-Command python -CommandType Application | Select-Object -First 1 -ExpandProperty Source)
       - name: Executable smoke tests
         shell: powershell
         run: |
           $exe = ".\dist\Quant Guardian\Quant Guardian.exe"
+          $gateway = ".\dist\Quant Guardian\Quant Guardian Gateway.exe"
           foreach ($arguments in @("--version", "--simulate", "--ui-smoke")) {
             $process = Start-Process -FilePath $exe -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
             if ($process.ExitCode -ne 0) {
               throw "Smoke test failed: $arguments exit $($process.ExitCode)"
             }
           }
+          $gatewayProcess = Start-Process -FilePath $gateway -ArgumentList "--version" -Wait -PassThru -WindowStyle Hidden
+          if ($gatewayProcess.ExitCode -ne 0) {
+            throw "Gateway smoke test failed: --version exit $($gatewayProcess.ExitCode)"
+          }
       - name: Package and validate
         shell: powershell
-        run: .\scripts\package-release.ps1 -Python (Join-Path $env:pythonLocation "python.exe") -SkipBuild
+        run: .\scripts\package-release.ps1 -Python (Get-Command python -CommandType Application | Select-Object -First 1 -ExpandProperty Source) -SkipBuild
       - name: Upload validated assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:

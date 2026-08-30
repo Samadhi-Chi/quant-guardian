@@ -218,9 +218,9 @@ class UiTests(unittest.TestCase):
     def test_shell_contains_three_pages_and_five_settings_sections(self) -> None:
         window = self.make_window()
         self.assertEqual(window.page_stack.count(), 3)
-        self.assertEqual(window.settings_stack.count(), 5)
+        self.assertEqual(window.settings_stack.count(), 9)
         self.assertEqual(len(window.nav_buttons), 3)
-        self.assertEqual(len(window.settings_nav), 5)
+        self.assertEqual(len(window.settings_nav), 9)
         self.assertEqual(window.state_hero.title_label.text(), STATE_DESCRIPTORS[GuardianState.HEALTHY].title)
         self.assertEqual(window.qmt_check_button.text(), "检测")
         self.assertEqual(window.restart_qmt_button.text(), "重启")

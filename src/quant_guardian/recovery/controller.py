@@ -83,7 +83,7 @@ class RecoveryController:
     ) -> RecoveryResult:
         if require_automatic_gate:
             if (
-                snapshot.rocket_active
+                snapshot.rocket_blocks_automatic_recovery
                 and not self.config.recovery.allow_qmt_restart_while_rocket_active
             ):
                 return RecoveryResult(

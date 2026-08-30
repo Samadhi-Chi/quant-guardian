@@ -17,8 +17,12 @@ if (-not $Destination) {
 $SourceDirectory = [IO.Path]::GetFullPath($SourceDirectory)
 $Destination = Assert-QgSafeDestination -Destination $Destination -ProjectRoot $ProjectRoot
 $SourceExecutable = Join-Path $SourceDirectory "Quant Guardian.exe"
+$SourceGatewayExecutable = Join-Path $SourceDirectory "Quant Guardian Gateway.exe"
 if (-not (Test-Path -LiteralPath $SourceExecutable -PathType Leaf)) {
     throw "Built application was not found: $SourceExecutable. Run scripts\build.ps1 first."
+}
+if (-not (Test-Path -LiteralPath $SourceGatewayExecutable -PathType Leaf)) {
+    throw "Gateway executable was not found: $SourceGatewayExecutable. Use the complete release package."
 }
 
 $Parent = Split-Path -Parent $Destination
@@ -26,13 +30,22 @@ $Parent = Split-Path -Parent $Destination
 $Staging = Join-Path $Parent ("Quant Guardian.install-" + [Guid]::NewGuid().ToString("N"))
 Copy-Item -LiteralPath $SourceDirectory -Destination $Staging -Recurse
 $StagedExecutable = Join-Path $Staging "Quant Guardian.exe"
+$StagedGatewayExecutable = Join-Path $Staging "Quant Guardian Gateway.exe"
 if (-not (Test-Path -LiteralPath $StagedExecutable -PathType Leaf)) {
     throw "Staged executable is missing: $StagedExecutable"
 }
+if (-not (Test-Path -LiteralPath $StagedGatewayExecutable -PathType Leaf)) {
+    throw "Staged gateway executable is missing: $StagedGatewayExecutable"
+}
 $SourceHash = (Get-FileHash -LiteralPath $SourceExecutable -Algorithm SHA256).Hash
 $StagedHash = (Get-FileHash -LiteralPath $StagedExecutable -Algorithm SHA256).Hash
+$SourceGatewayHash = (Get-FileHash -LiteralPath $SourceGatewayExecutable -Algorithm SHA256).Hash
+$StagedGatewayHash = (Get-FileHash -LiteralPath $StagedGatewayExecutable -Algorithm SHA256).Hash
 if ($SourceHash -ne $StagedHash) {
     throw "Staged executable hash does not match the build output."
+}
+if ($SourceGatewayHash -ne $StagedGatewayHash) {
+    throw "Staged gateway executable hash does not match the build output."
 }
 $VersionFile = Join-Path $SourceDirectory "VERSION"
 if (-not (Test-Path -LiteralPath $VersionFile -PathType Leaf)) {

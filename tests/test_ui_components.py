@@ -20,7 +20,11 @@ from quant_guardian.ui.dialogs import (
     QuantclassRestartConfirmDialog,
     RestartConfirmDialog,
 )
-from quant_guardian.ui.event_model import EventTableModel, OperationTableModel
+from quant_guardian.ui.event_model import (
+    EventTableModel,
+    GatewayActivityTableModel,
+    OperationTableModel,
+)
 from quant_guardian.ui.widgets import (
     HealthSample,
     HealthTimelineWidget,
@@ -334,6 +338,22 @@ class UiComponentTests(unittest.TestCase):
             compute_trend_metrics([], "1h"),
             ("—", "—", "—", "—", "—", "等待数据"),
         )
+
+    def test_gateway_activity_uses_message_result_labels(self) -> None:
+        model = GatewayActivityTableModel()
+        model.set_rows(
+            [
+                {
+                    "time": BASE.isoformat(),
+                    "channel": "telegram",
+                    "kind": "command",
+                    "action": "restart_qmt",
+                    "status": "succeeded",
+                    "reason": "accepted",
+                }
+            ]
+        )
+        self.assertEqual(model.data(model.index(0, 4)), "成功")
 
 
 if __name__ == "__main__":

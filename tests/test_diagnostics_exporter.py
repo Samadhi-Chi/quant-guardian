@@ -19,6 +19,16 @@ class DiagnosticExporterTests(unittest.TestCase):
             runtime = root / "runtime"
             logs = runtime / "logs"
             logs.mkdir(parents=True)
+            (runtime / "config").mkdir()
+            (runtime / "secrets").mkdir()
+            (runtime / "state").mkdir()
+            (runtime / "config" / "messaging.json").write_text(
+                '{"home_chat_id":"private-chat"}', encoding="utf-8"
+            )
+            (runtime / "secrets" / "messaging-secrets.json").write_text(
+                '{"telegram_bot_token":"protected-value"}', encoding="utf-8"
+            )
+            (runtime / "state" / "gateway.db").write_bytes(b"private gateway data")
             qmt_root = root / "Private QMT"
             quantclass_root = root / "Private Quantclass"
             qmt_root.mkdir()
@@ -71,6 +81,9 @@ class DiagnosticExporterTests(unittest.TestCase):
                 )
             self.assertNotIn("123456789012", content)
             self.assertNotIn("super-secret-token", content)
+            self.assertNotIn("private-chat", content)
+            self.assertNotIn("protected-value", content)
+            self.assertNotIn("private gateway data", content)
             self.assertNotIn(str(qmt_root), content)
             self.assertNotIn(str(quantclass_root), content)
             if username:

@@ -44,7 +44,7 @@ try {
     $Executable = Join-Path $Valid "Quant Guardian.exe"
     Set-Content -LiteralPath $Executable -Value "test executable" -Encoding ascii
     $Hash = (Get-FileHash -LiteralPath $Executable -Algorithm SHA256).Hash
-    Write-QgInstallMarker $Valid $Valid "0.3.0b1" $Hash | Out-Null
+    Write-QgInstallMarker $Valid $Valid "0.4.0b1" $Hash | Out-Null
     $Resolved = Assert-QgValidInstallation $Valid $ProjectRoot
     if (-not (Test-QgSamePath $Resolved $Valid)) {
         $Failures.Add("valid custom destination did not round-trip")
@@ -78,7 +78,7 @@ try {
     $TamperedExecutable = Join-Path $Tampered "Quant Guardian.exe"
     Set-Content -LiteralPath $TamperedExecutable -Value "before" -Encoding ascii
     $OriginalHash = (Get-FileHash -LiteralPath $TamperedExecutable -Algorithm SHA256).Hash
-    Write-QgInstallMarker $Tampered $Tampered "0.3.0b1" $OriginalHash | Out-Null
+    Write-QgInstallMarker $Tampered $Tampered "0.4.0b1" $OriginalHash | Out-Null
     Set-Content -LiteralPath $TamperedExecutable -Value "after" -Encoding ascii
     Expect-Blocked "tampered executable" {
         Assert-QgValidInstallation $Tampered $ProjectRoot

@@ -80,6 +80,17 @@ class HealthSnapshot:
     account_status: str = "unknown"
     login_requires_manual: bool = False
     details: dict[str, Any] = field(default_factory=dict)
+    rocket_business_healthy: bool | None = None
+
+    @property
+    def rocket_blocks_automatic_recovery(self) -> bool:
+        """Use business liveness when known; preserve legacy snapshot semantics."""
+
+        return (
+            self.rocket_active
+            if self.rocket_business_healthy is None
+            else self.rocket_business_healthy
+        )
 
     @property
     def is_healthy(self) -> bool:

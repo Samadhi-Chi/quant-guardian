@@ -32,6 +32,19 @@ class ConfigAndSafetyTests(unittest.TestCase):
             config.validate(),
         )
 
+    def test_fuel_minute_data_sessions_require_ordered_time_ranges(self) -> None:
+        config = AppConfig()
+        config.trade_system.fuel_min_data_sessions = ["13:00-11:30", "bad"]
+        errors = config.validate()
+        self.assertIn(
+            "trade_system.fuel_min_data_sessions[0] must use HH:mm-HH:mm",
+            errors,
+        )
+        self.assertIn(
+            "trade_system.fuel_min_data_sessions[1] must use HH:mm-HH:mm",
+            errors,
+        )
+
     def test_private_probe_runtime_is_auto_discovered(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             local_app_data = Path(directory) / "LocalAppData"
