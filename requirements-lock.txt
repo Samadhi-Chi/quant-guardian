@@ -44,7 +44,7 @@ PySide6_Addons==6.11.1
 PySide6_Essentials==6.11.1
 PySide6==6.11.1
 qrcode==8.2
-pytest-cov==6.3.0
+pytest-cov==7.1.0
 pytest==9.0.3
 python-dateutil==2.9.0.post0
 pywin32-ctypes==0.2.3
