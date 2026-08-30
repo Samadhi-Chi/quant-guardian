@@ -450,6 +450,68 @@ class ServiceTests(unittest.TestCase):
             finally:
                 service.stop()
 
+    def test_idle_startup_grace_keeps_confirmation_burst_until_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"LOCALAPPDATA": directory}
+        ):
+            config = self.make_config()
+            config.mode = "recover"
+            config.thresholds.startup_grace_seconds = 90
+            sentinel = Path(directory) / "RECOVERY_ENABLED"
+            sentinel.write_text(SENTINEL_CONTENT, encoding="utf-8")
+            recovery = FakeRecovery()
+            quantclass = FakeQuantclassController()
+            service = GuardianService(
+                config,
+                process_monitor=FakeProcessMonitor(ProcessStatus.MISSING),
+                log_monitor=FakeLogMonitor(),
+                network_monitor=FakeNetworkMonitor(),
+                rocket_monitor=FakeRocketMonitor(),
+                probe=FakeProbe(),
+                recovery=recovery,
+                quantclass_controller=quantclass,
+                audit=AuditLogger(Path(directory) / "logs"),
+                safety_gate=SafetyGate(config, sentinel),
+                now=BASE,
+            )
+            try:
+                grace_samples = [
+                    service.run_once(BASE + timedelta(seconds=offset))
+                    for offset in (1, 16, 31, 46, 61, 76)
+                ]
+                self.assertTrue(
+                    all(
+                        status.schedule["interval_seconds"] == 15.0
+                        for status in grace_samples
+                    )
+                )
+                self.assertTrue(
+                    all(
+                        status.schedule["anomaly_confirmation"]["current"] == 0
+                        for status in grace_samples
+                    )
+                )
+                self.assertEqual(recovery.calls, 0)
+
+                first = service.run_once(BASE + timedelta(seconds=91))
+                second = service.run_once(BASE + timedelta(seconds=106))
+                recovered = service.run_once(BASE + timedelta(seconds=121))
+
+                self.assertEqual(first.state, GuardianState.SUSPECT)
+                self.assertEqual(
+                    first.schedule["anomaly_confirmation"]["current"], 1
+                )
+                self.assertEqual(first.schedule["interval_seconds"], 15.0)
+                self.assertEqual(
+                    second.schedule["anomaly_confirmation"]["current"], 2
+                )
+                self.assertEqual(second.schedule["interval_seconds"], 15.0)
+                self.assertEqual(recovery.calls, 1)
+                self.assertEqual(quantclass.calls, 0)
+                self.assertEqual(recovered.state, GuardianState.VERIFYING)
+            finally:
+                service.stop()
+
     def test_rocket_active_suppresses_automatic_qmt_and_quantclass_restart(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             os.environ, {"LOCALAPPDATA": directory}

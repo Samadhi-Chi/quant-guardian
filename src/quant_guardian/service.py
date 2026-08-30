@@ -1314,18 +1314,32 @@ class GuardianService:
                 and decision_snapshot.network_available
                 and not decision_snapshot.login_requires_manual
             )
+            decision_grace_active = (
+                self.machine.state
+                in {GuardianState.STARTING, GuardianState.VERIFYING}
+                and at < self.machine.grace_until
+            )
             if schedule.mode == "idle" and qmt_fault:
-                if (
-                    self._last_idle_failure_at is None
-                    or (at - self._last_idle_failure_at).total_seconds()
-                    > self.config.thresholds.failure_window_seconds
-                ):
+                # A failure inside the state machine's startup/resume grace is
+                # evidence for keeping the 15-second burst alive, but it must
+                # not consume the independent idle confirmation counter.  If
+                # it did, the counter could reach 3/3 during grace and return
+                # to hourly polling just as the state machine records 1/3.
+                if decision_grace_active:
                     self._idle_failure_count = 0
-                self._idle_failure_count = min(
-                    self._idle_failure_count + 1,
-                    self._idle_confirmation_required(),
-                )
-                self._last_idle_failure_at = at
+                    self._last_idle_failure_at = None
+                else:
+                    if (
+                        self._last_idle_failure_at is None
+                        or (at - self._last_idle_failure_at).total_seconds()
+                        > self.config.thresholds.failure_window_seconds
+                    ):
+                        self._idle_failure_count = 0
+                    self._idle_failure_count = min(
+                        self._idle_failure_count + 1,
+                        self._idle_confirmation_required(),
+                    )
+                    self._last_idle_failure_at = at
             else:
                 self._idle_failure_count = 0
                 self._last_idle_failure_at = None
@@ -1399,8 +1413,22 @@ class GuardianService:
                 else:
                     self._manual_after_recovery = False
 
+            idle_recovery_backoff = (
+                transition.new_state is GuardianState.DEGRADED
+                and transition.action is RecommendedAction.WAIT
+                and self.machine.next_attempt_at is not None
+                and at < self.machine.next_attempt_at
+                and schedule_permits_recovery
+            )
             anomalous_idle = (
-                schedule.mode == "idle" and qmt_fault and not idle_confirmed
+                schedule.mode == "idle"
+                and qmt_fault
+                and (
+                    not idle_confirmed
+                    or transition.new_state
+                    in {GuardianState.STARTING, GuardianState.SUSPECT}
+                    or idle_recovery_backoff
+                )
             )
             status = self._build_status(
                 transition,
@@ -1446,6 +1474,11 @@ class GuardianService:
         remote_request_id: str = "",
     ) -> ServiceStatus:
         started_at = datetime.now().astimezone()
+        # The completed confirmation belongs to the recovery attempt that is
+        # starting now.  A failed launch must build a fresh evidence window
+        # before a later retry, rather than inheriting a stale 3/3 display.
+        self._idle_failure_count = 0
+        self._last_idle_failure_at = None
         operation = self._begin_recovery_operation(
             started_at,
             manual=manual,
