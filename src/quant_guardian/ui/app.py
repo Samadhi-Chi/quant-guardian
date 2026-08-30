@@ -69,7 +69,7 @@ def run_gui(
         )
         return 2
 
-    service = GuardianService(config)
+    service = GuardianService(config, runtime_root=runtime_root)
     messaging_path = (
         default_messaging_config_path()
         if runtime_root is None
