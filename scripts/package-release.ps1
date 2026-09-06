@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "0.5.0b1",
-    [string]$ReleaseTag = "v0.5.0-beta.1",
+    [string]$Version = "0.5.0b2",
+    [string]$ReleaseTag = "v0.5.0-beta.2",
     [string]$Python = "",
     [switch]$SkipBuild
 )

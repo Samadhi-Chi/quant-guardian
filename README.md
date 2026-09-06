@@ -8,7 +8,7 @@ Quant Guardian 是一个独立的 Windows 桌面监控工具，用于观察 QMT 
 [![CodeQL](https://github.com/Samadhi-Chi/quant-guardian/actions/workflows/codeql.yml/badge.svg)](https://github.com/Samadhi-Chi/quant-guardian/actions/workflows/codeql.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-> **公开预览版提示：** v0.5.0-beta.1 尚未进行代码签名，Windows SmartScreen 可能提示未知发布者。应用、消息 Gateway 与远程控制均采用保守默认值；在实盘环境启用任何恢复能力前，必须完成本机验证并理解风险。
+> **公开预览版提示：** v0.5.0-beta.2 尚未进行代码签名，Windows SmartScreen 可能提示未知发布者。应用、消息 Gateway 与远程控制均采用保守默认值；在实盘环境启用任何恢复能力前，必须完成本机验证并理解风险。
 
 ## 界面预览
 
@@ -40,9 +40,9 @@ Quant Guardian 是一个独立的 Windows 桌面监控工具，用于观察 QMT 
 
 从 [GitHub Releases](https://github.com/Samadhi-Chi/quant-guardian/releases) 下载最新的 Windows x64 预览版：
 
-- Quant-Guardian-v0.5.0-beta.1-windows-x64.zip
-- Quant-Guardian-v0.5.0-beta.1-SHA256SUMS.txt
-- Quant-Guardian-v0.5.0-beta.1-SBOM.cdx.json
+- Quant-Guardian-v0.5.0-beta.2-windows-x64.zip
+- Quant-Guardian-v0.5.0-beta.2-SHA256SUMS.txt
+- Quant-Guardian-v0.5.0-beta.2-SBOM.cdx.json
 
 下载后先核对 SHA-256，再解压到普通用户目录。ZIP 是可移植 one-folder 包，包含 `Quant Guardian.exe` 与隔离的 `Quant Guardian Gateway.exe`，但不包含 QMT、XTQuant、Quantclass、真实配置、凭据、日志或监控数据库。
 
@@ -74,7 +74,7 @@ Gateway 不包含 LLM、Agent、Shell、文件访问或自由文本执行器。�
 2. 在 PowerShell 中校验：
 
 ~~~powershell
-Get-FileHash .\Quant-Guardian-v0.5.0-beta.1-windows-x64.zip -Algorithm SHA256
+Get-FileHash .\Quant-Guardian-v0.5.0-beta.2-windows-x64.zip -Algorithm SHA256
 ~~~
 
 3. 解压后直接运行 Quant Guardian\Quant Guardian.exe，或使用包内加固后的 scripts\install-app.ps1 安装到当前用户目录。

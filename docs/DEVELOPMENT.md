@@ -35,7 +35,7 @@ Only synthetic data from PreviewService may be committed. Do not capture a live 
 
 ~~~powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package-release.ps1 -Version 0.5.0b1 -ReleaseTag v0.5.0-beta.1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\package-release.ps1 -Version 0.5.0b2 -ReleaseTag v0.5.0-beta.2
 ~~~
 
 The package script verifies the tag/package mapping, license inventory, forbidden content and SHA-256. It creates the Windows ZIP, CycloneDX SBOM and checksum file under release-assets.
