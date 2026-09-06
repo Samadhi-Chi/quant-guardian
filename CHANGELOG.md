@@ -2,6 +2,15 @@
 
 All notable changes are documented here. Versions follow semantic versioning; pre-release identifiers use the corresponding Python package form internally.
 
+## [0.5.0-beta.2] - 2026-09-06
+
+Closed-market QMT status correction following the Quantclass 4.2.1 adaptation.
+
+### Fixed
+
+- Treat the exact XTQuant `connect returned -1` result as a closed-session idle state only on confirmed non-trading days when QMT processes and network are healthy and no manual login is required.
+- Preserve strict critical handling for the same connection failure during a trading day or when process, network, or login safety conditions are not satisfied.
+
 ## [0.5.0-beta.1] - 2026-09-06
 
 Quantclass Client 4.2.1 compatibility preview.
@@ -62,3 +71,4 @@ First public preview.
 [0.3.0-beta.1]: https://github.com/Samadhi-Chi/quant-guardian/releases/tag/v0.3.0-beta.1
 [0.4.0-beta.1]: https://github.com/Samadhi-Chi/quant-guardian/releases/tag/v0.4.0-beta.1
 [0.5.0-beta.1]: https://github.com/Samadhi-Chi/quant-guardian/releases/tag/v0.5.0-beta.1
+[0.5.0-beta.2]: https://github.com/Samadhi-Chi/quant-guardian/releases/tag/v0.5.0-beta.2

@@ -758,6 +758,11 @@ class GuardianService:
                 and probe.reason == "QMT account login status is not healthy"
                 and probe.account_status in _MARKET_CLOSED_IDLE_ACCOUNT_STATUSES
             )
+            or (
+                probe.status is ProbeStatus.FAILED
+                and probe.account_status == "unknown"
+                and "XtQuant connect returned -1" in probe.reason
+            )
         )
         return (
             not schedule.trading_day

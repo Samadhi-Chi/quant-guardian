@@ -8,7 +8,7 @@ on:
         required: true
         type: choice
         options:
-          - v0.5.0-beta.1
+          - v0.5.0-beta.2
       confirm:
         description: Type PUBLISH-PRE-RELEASE
         required: true
@@ -17,7 +17,7 @@ on:
 jobs:
   release:
     name: validate and publish Windows pre-release
-    if: inputs.release_tag == 'v0.5.0-beta.1' && inputs.confirm == 'PUBLISH-PRE-RELEASE'
+    if: inputs.release_tag == 'v0.5.0-beta.2' && inputs.confirm == 'PUBLISH-PRE-RELEASE'
     runs-on: windows-latest
     environment: release
     permissions:
@@ -84,4 +84,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ inputs.release_tag }}" .\release-assets\* --verify-tag --prerelease --title "Quant Guardian ${{ inputs.release_tag }}" --notes-file .\docs\RELEASE_NOTES_v0.5.0-beta.1.md
+          gh release create "${{ inputs.release_tag }}" .\release-assets\* --verify-tag --prerelease --title "Quant Guardian ${{ inputs.release_tag }}" --notes-file .\docs\RELEASE_NOTES_v0.5.0-beta.2.md

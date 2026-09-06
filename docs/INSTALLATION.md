@@ -6,7 +6,7 @@
 2. Compare the ZIP hash with:
 
 ~~~powershell
-Get-FileHash .\Quant-Guardian-v0.5.0-beta.1-windows-x64.zip -Algorithm SHA256
+Get-FileHash .\Quant-Guardian-v0.5.0-beta.2-windows-x64.zip -Algorithm SHA256
 ~~~
 
 3. Extract it to a normal user-owned directory, not a drive root, user profile root or Programs root.

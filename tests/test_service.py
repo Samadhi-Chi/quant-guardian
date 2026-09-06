@@ -193,6 +193,16 @@ class TimeoutProbe(FakeProbe):
         )
 
 
+class ConnectRejectedProbe(FakeProbe):
+    def health(self) -> ProbeObservation:
+        return ProbeObservation(
+            ProbeStatus.FAILED,
+            "read-only probe failed: ConnectionError: XtQuant connect returned -1",
+            3063,
+            "unknown",
+        )
+
+
 class ServiceTests(unittest.TestCase):
     def make_config(self) -> AppConfig:
         config = AppConfig()
@@ -367,6 +377,79 @@ class ServiceTests(unittest.TestCase):
                 self.assertFalse(status.attention["required"])
                 self.assertEqual(status.schedule["interval_seconds"], 3600.0)
                 self.assertEqual(recovery.calls, 0)
+            finally:
+                service.stop()
+
+    def test_closed_market_connect_rejected_is_idle_and_never_restarted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"LOCALAPPDATA": directory}
+        ):
+            moment = datetime(
+                2026, 9, 6, 11, 0, tzinfo=timezone(timedelta(hours=8))
+            )
+            config = self.make_config()
+            config.mode = "recover"
+            sentinel = Path(directory) / "RECOVERY_ENABLED"
+            sentinel.write_text(SENTINEL_CONTENT, encoding="utf-8")
+            recovery = FakeRecovery()
+            service = GuardianService(
+                config,
+                process_monitor=FakeProcessMonitor(),
+                log_monitor=FakeLogMonitor(LogSignal.POSITIVE),
+                network_monitor=FakeNetworkMonitor(),
+                rocket_monitor=FakeRocketMonitor(),
+                trade_system_monitor=HealthyTradeMonitor(),
+                probe=ConnectRejectedProbe(),
+                recovery=recovery,
+                audit=AuditLogger(Path(directory) / "logs"),
+                safety_gate=SafetyGate(config, sentinel),
+                now=moment,
+            )
+            try:
+                service.run_once(moment)
+                status = service.run_once(moment + timedelta(seconds=1))
+                qmt = status.components["qmt_api"]
+                children = {child["id"]: child for child in qmt["children"]}
+                self.assertEqual(status.state, GuardianState.HEALTHY)
+                self.assertEqual(qmt["state"], "idle")
+                self.assertTrue(qmt["metrics"]["market_closed_session_idle"])
+                self.assertEqual(children["qmt_api.xtquant"]["state"], "idle")
+                self.assertEqual(children["qmt_api.account"]["state"], "idle")
+                self.assertFalse(status.attention["required"])
+                self.assertEqual(status.schedule["interval_seconds"], 3600.0)
+                self.assertEqual(recovery.calls, 0)
+            finally:
+                service.stop()
+
+    def test_trading_day_connect_rejected_remains_a_strict_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"LOCALAPPDATA": directory}
+        ):
+            moment = datetime(
+                2026, 9, 7, 8, 30, tzinfo=timezone(timedelta(hours=8))
+            )
+            config = self.make_config()
+            service = GuardianService(
+                config,
+                process_monitor=FakeProcessMonitor(),
+                log_monitor=FakeLogMonitor(LogSignal.POSITIVE),
+                network_monitor=FakeNetworkMonitor(),
+                rocket_monitor=FakeRocketMonitor(),
+                trade_system_monitor=HealthyTradeMonitor(),
+                probe=ConnectRejectedProbe(),
+                recovery=FakeRecovery(),
+                audit=AuditLogger(Path(directory) / "logs"),
+                safety_gate=SafetyGate(config, Path(directory) / "sentinel"),
+                now=moment,
+            )
+            try:
+                status = service.run_once(moment)
+                qmt = status.components["qmt_api"]
+                children = {child["id"]: child for child in qmt["children"]}
+                self.assertNotEqual(qmt["state"], "idle")
+                self.assertFalse(qmt["metrics"]["market_closed_session_idle"])
+                self.assertEqual(children["qmt_api.xtquant"]["state"], "critical")
+                self.assertEqual(status.schedule["mode"], "active")
             finally:
                 service.stop()
 
