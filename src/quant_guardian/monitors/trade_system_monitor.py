@@ -18,8 +18,11 @@ from quant_guardian.domain.components import (
 from quant_guardian.monitors.rocket_monitor import RocketObservation
 
 _TIMESTAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:,\d+)?")
-_START = re.compile(r"\[(fuel|aqua|zeus|rocket)\].*\bpid\s+\d+\s+start", re.I)
-_EXIT = re.compile(r"\[(fuel|aqua|zeus|rocket)\].*\bpid\s+\d+\s+exit successfully", re.I)
+_START = re.compile(r"\[(fuel|fusion|aqua|zeus|rocket)\].*\bpid\s+\d+\s+start", re.I)
+_EXIT = re.compile(
+    r"\[(fuel|fusion|aqua|zeus|rocket)\].*\bpid\s+\d+\s+exit successfully",
+    re.I,
+)
 _FUEL_TIME = re.compile(r"^[A-Z]+:root:(\d{2}:\d{2}:\d{2})\s+-->")
 _FUEL_LOG_DATE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 _FUEL_MIN_SUCCESS = re.compile(r"本轮完成，成功\s+(\d+)/(\d+)")
@@ -34,6 +37,15 @@ def _parse_timestamp(line: str) -> datetime | None:
         return None
     try:
         return datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S").astimezone()
+    except ValueError:
+        return None
+
+
+def _parse_local_datetime(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S").astimezone()
     except ValueError:
         return None
 
@@ -130,6 +142,95 @@ class IncrementalTaskLog:
                 self.runtime.run_error = False
                 self.runtime.run_error_summary = ""
         return self.runtime
+
+
+@dataclass(frozen=True, slots=True)
+class _TaskStatusSnapshot:
+    path: Path | None = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    modified_at: datetime | None = None
+    running: bool | None = None
+    command: str = ""
+    step_count: int = 0
+    message_count: int = 0
+
+    @property
+    def activity_at(self) -> datetime | None:
+        return self.ended_at or self.started_at or self.modified_at
+
+
+class IncrementalTaskStatus:
+    """Read the newest small UI status file and retain the last valid document."""
+
+    def __init__(self, directory: Path, engine: str) -> None:
+        self.directory = directory
+        self.engine = engine.casefold()
+        self._identity: tuple[str, int, int] | None = None
+        self._snapshot = _TaskStatusSnapshot()
+
+    def _latest_path(self, now: datetime) -> Path | None:
+        today = self.directory / f"{self.engine}-stats-{now:%Y-%m-%d}.json"
+        if today.is_file():
+            return today
+        cached = self._snapshot.path
+        if cached is not None and cached.is_file():
+            return cached
+        try:
+            candidates = [
+                path
+                for path in self.directory.glob(f"{self.engine}-stats-*.json")
+                if path.is_file()
+            ]
+        except OSError:
+            return None
+        if not candidates:
+            return None
+        try:
+            return max(candidates, key=lambda path: path.stat().st_mtime_ns)
+        except OSError:
+            return None
+
+    def observe(self, now: datetime) -> _TaskStatusSnapshot:
+        path = self._latest_path(now)
+        if path is None:
+            return self._snapshot
+        try:
+            stat = path.stat()
+        except OSError:
+            return self._snapshot
+        identity = (str(path), int(stat.st_mtime_ns), int(stat.st_size))
+        if identity == self._identity:
+            return self._snapshot
+        try:
+            document = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return self._snapshot
+        if not isinstance(document, dict):
+            return self._snapshot
+        stats = document.get("stats")
+        steps = stats if isinstance(stats, list) else []
+        message_count = 0
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            messages = step.get("messages")
+            if isinstance(messages, list):
+                message_count += len(messages)
+        running_value = document.get("is_running")
+        snapshot = _TaskStatusSnapshot(
+            path=path,
+            started_at=_parse_local_datetime(document.get("start_time")),
+            ended_at=_parse_local_datetime(document.get("end_time")),
+            modified_at=datetime.fromtimestamp(stat.st_mtime).astimezone(),
+            running=running_value if isinstance(running_value, bool) else None,
+            command=str(document.get("command") or ""),
+            step_count=len(steps),
+            message_count=message_count,
+        )
+        self._identity = identity
+        self._snapshot = snapshot
+        return snapshot
 
 
 @dataclass(slots=True)
@@ -272,6 +373,14 @@ class TradeSystemMonitor:
             self._resolve(config.zeus_log_file),
             tail_bytes=config.task_log_tail_bytes,
         )
+        self._fusion_log = IncrementalTaskLog(
+            self._resolve(config.fusion_log_file),
+            tail_bytes=config.task_log_tail_bytes,
+        )
+        selection_status_directory = self._resolve(config.selection_status_directory)
+        self._aqua_status = IncrementalTaskStatus(selection_status_directory, "aqua")
+        self._zeus_status = IncrementalTaskStatus(selection_status_directory, "zeus")
+        self._fusion_status = IncrementalTaskStatus(selection_status_directory, "fusion")
         self._fuel_log = IncrementalFuelLog(
             self._resolve(config.fuel_log_directory),
             tail_bytes=config.task_log_tail_bytes,
@@ -343,12 +452,7 @@ class TradeSystemMonitor:
 
     @staticmethod
     def _parse_local(value: object) -> datetime | None:
-        if not value:
-            return None
-        try:
-            return datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S").astimezone()
-        except ValueError:
-            return None
+        return _parse_local_datetime(value)
 
     def _fuel_minute_session_start(self, now: datetime) -> datetime | None:
         current_minute = now.hour * 60 + now.minute
@@ -677,30 +781,98 @@ class TradeSystemMonitor:
         engine: str,
         process_names: list[str],
         log: IncrementalTaskLog,
+        status: IncrementalTaskStatus,
         now: datetime,
         priority: str,
         failure_is_critical: bool,
     ) -> ComponentNode:
         active = self._active_processes(process_names)
         runtime = log.observe()
+        status_snapshot = status.observe(now)
+        last_result = runtime.last_result
+        last_result_at = runtime.last_result_at
+        if status_snapshot.ended_at and (
+            last_result_at is None or status_snapshot.ended_at >= last_result_at
+        ):
+            if (
+                runtime.run_error
+                and runtime.run_started_at
+                and status_snapshot.ended_at >= runtime.run_started_at
+            ):
+                last_result = "failed"
+            else:
+                last_result = "success"
+            last_result_at = status_snapshot.ended_at
+        if (
+            not active
+            and runtime.run_error
+            and runtime.last_result_at is not None
+            and (
+                status_snapshot.started_at is None
+                or runtime.last_result_at >= status_snapshot.started_at
+            )
+        ):
+            last_result = "failed"
+            last_result_at = max(
+                value
+                for value in (last_result_at, runtime.last_result_at)
+                if value is not None
+            )
+
+        recent_cutoff = now - timedelta(hours=36)
+        incomplete_started_at = runtime.run_started_at
+        status_activity_at = status_snapshot.activity_at
         if active:
             state = ComponentState.HEALTHY
             reason = f"{engine}任务正在运行"
-        elif runtime.last_result == "failed":
+            condition = "task_running"
+        elif last_result == "failed":
             state = (
                 ComponentState.CRITICAL
                 if failure_is_critical
-                and runtime.last_result_at
-                and now - runtime.last_result_at < timedelta(hours=36)
+                and last_result_at
+                and last_result_at >= recent_cutoff
                 else ComponentState.WARNING
             )
             reason = runtime.last_error_summary or f"{engine}最近一次任务失败"
-        elif runtime.last_result == "success":
+            condition = "recent_failure"
+        elif (
+            status_snapshot.running is True
+            and status_activity_at is not None
+            and status_activity_at >= recent_cutoff
+        ):
+            state = ComponentState.WARNING
+            reason = f"{engine}状态仍标记运行，但未检测到对应进程"
+            condition = "status_running_process_missing"
+        elif (
+            incomplete_started_at is not None
+            and incomplete_started_at >= recent_cutoff
+            and (
+                status_snapshot.ended_at is None
+                or status_snapshot.ended_at < incomplete_started_at
+            )
+        ):
+            state = ComponentState.WARNING
+            reason = f"{engine}任务启动后未记录完成，且进程已不存在"
+            condition = "incomplete_run"
+        elif last_result == "success":
             state = ComponentState.IDLE
             reason = f"{engine}当前空闲，最近一次任务成功"
+            condition = "last_run_succeeded"
         else:
             state = ComponentState.IDLE
             reason = f"{engine}当前无运行任务"
+            condition = "idle_no_result"
+        activity_candidates = [
+            value
+            for value in (
+                runtime.run_started_at,
+                last_result_at,
+                status_snapshot.activity_at,
+            )
+            if value is not None
+        ]
+        activity_at = max(activity_candidates) if activity_candidates else None
         return ComponentNode(
             id=node_id,
             name=name,
@@ -710,16 +882,79 @@ class TradeSystemMonitor:
             priority=priority,
             metrics={
                 "engine": engine,
+                "condition": condition,
                 "active_processes": active,
-                "last_result": runtime.last_result,
+                "last_result": last_result,
                 "last_result_at": (
-                    runtime.last_result_at.isoformat()
-                    if runtime.last_result_at
+                    last_result_at.isoformat()
+                    if last_result_at
                     else ""
                 ),
+                "activity_at": activity_at.isoformat() if activity_at else "",
                 "log_file": str(log.path),
+                "status_file": (
+                    str(status_snapshot.path) if status_snapshot.path else ""
+                ),
+                "status_running": status_snapshot.running,
+                "status_started_at": (
+                    status_snapshot.started_at.isoformat()
+                    if status_snapshot.started_at
+                    else ""
+                ),
+                "status_ended_at": (
+                    status_snapshot.ended_at.isoformat()
+                    if status_snapshot.ended_at
+                    else ""
+                ),
+                "status_command": status_snapshot.command,
+                "status_steps": status_snapshot.step_count,
+                "status_messages": status_snapshot.message_count,
             },
         )
+
+    @staticmethod
+    def _metric_time(node: ComponentNode) -> datetime | None:
+        value = node.metrics.get("activity_at")
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(value))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.astimezone()
+
+    def _select_engine(self, nodes: dict[str, ComponentNode]) -> tuple[str, str]:
+        configured = str(self.config.selection_engine).casefold()
+        if configured != "auto":
+            return configured, "configured"
+
+        priority = {"fusion": 3, "zeus": 2, "aqua": 1}
+        active = [
+            key
+            for key, node in nodes.items()
+            if isinstance(node.metrics.get("active_processes"), list)
+            and bool(node.metrics["active_processes"])
+        ]
+        if active:
+            return max(active, key=lambda key: priority[key]), "running_process"
+
+        recent = [
+            (self._metric_time(node), priority[key], key)
+            for key, node in nodes.items()
+            if self._metric_time(node) is not None
+        ]
+        if recent:
+            _at, _priority, selected = max(recent)
+            return selected, "latest_status_or_log"
+
+        installed = [
+            key
+            for key in ("fusion", "zeus", "aqua")
+            if (self.root / "code" / key / f"{key}.exe").is_file()
+        ]
+        if installed:
+            return max(installed, key=lambda key: priority[key]), "installed_kernel"
+        return "zeus", "legacy_default"
 
     def observe(
         self,
@@ -744,6 +979,7 @@ class TradeSystemMonitor:
             engine="Aqua",
             process_names=self.config.aqua_process_names,
             log=self._aqua_log,
+            status=self._aqua_status,
             now=now,
             priority="high",
             failure_is_critical=True,
@@ -754,33 +990,55 @@ class TradeSystemMonitor:
             engine="Zeus",
             process_names=self.config.zeus_process_names,
             log=self._zeus_log,
+            status=self._zeus_status,
             now=now,
             priority="high",
             failure_is_critical=True,
         )
-        selected_engine = str(self.config.selection_engine).casefold()
-        aqua = replace(
-            aqua,
-            metrics={**aqua.metrics, "selected": selected_engine == "aqua"},
+        fusion = self._task_node(
+            node_id="trade_system.selection.fusion",
+            name="选股引擎 · Fusion",
+            engine="Fusion",
+            process_names=self.config.fusion_process_names,
+            log=self._fusion_log,
+            status=self._fusion_status,
+            now=now,
+            priority="high",
+            failure_is_critical=True,
         )
-        zeus = replace(
-            zeus,
-            metrics={**zeus.metrics, "selected": selected_engine == "zeus"},
-        )
-        selected = aqua if selected_engine == "aqua" else zeus
+        engine_nodes = {"fusion": fusion, "aqua": aqua, "zeus": zeus}
+        selected_engine, detection_source = self._select_engine(engine_nodes)
+        engine_nodes = {
+            key: replace(
+                node,
+                metrics={**node.metrics, "selected": selected_engine == key},
+            )
+            for key, node in engine_nodes.items()
+        }
+        fusion = engine_nodes["fusion"]
+        aqua = engine_nodes["aqua"]
+        zeus = engine_nodes["zeus"]
+        selected = engine_nodes[selected_engine]
+        selection_mode = str(self.config.selection_engine).casefold()
+        selection_prefix = "自动识别" if selection_mode == "auto" else "当前使用"
         selection = ComponentNode(
             id="trade_system.selection",
             name="选股内核",
             state=selected.state,
-            reason=f"当前使用{selected.metrics['engine']}：{selected.reason}",
+            reason=f"{selection_prefix}{selected.metrics['engine']}：{selected.reason}",
             observed_at=now,
             priority="high",
             metrics={
                 "engine": selected.metrics["engine"],
                 "selected_engine": selected_engine,
-                "available_engines": ["Aqua", "Zeus"],
+                "selection_mode": selection_mode,
+                "detection_source": detection_source,
+                "available_engines": ["Fusion", "Aqua", "Zeus"],
+                "last_result": selected.metrics.get("last_result", "unknown"),
+                "last_result_at": selected.metrics.get("last_result_at", ""),
+                "active_processes": selected.metrics.get("active_processes", []),
             },
-            children=(aqua, zeus),
+            children=(fusion, aqua, zeus),
         )
         if rocket.active:
             rocket_state = (
@@ -855,7 +1113,11 @@ class TradeSystemMonitor:
             evidence={
                 "data_root": str(self.root),
                 "selection_engine": selected_engine,
+                "selection_mode": selection_mode,
+                "selection_detection_source": detection_source,
+                "fusion_log": str(self._fusion_log.path),
                 "zeus_log": str(self._zeus_log.path),
                 "aqua_log": str(self._aqua_log.path),
+                "selection_status_directory": str(self._fusion_status.directory),
             },
         )

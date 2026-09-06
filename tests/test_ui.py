@@ -227,7 +227,7 @@ class UiTests(unittest.TestCase):
         self.assertEqual(window.trade_check_button.text(), "检测")
         self.assertEqual(window.trade_restart_button.text(), "重启")
         self.assertFalse(hasattr(window, "attention_panel"))
-        self.assertEqual(window.selection_engine.currentData(), "zeus")
+        self.assertEqual(window.selection_engine.currentData(), "auto")
 
     def test_every_guardian_state_has_a_complete_status_render(self) -> None:
         window = self.make_window(make_status(GuardianState.STARTING))

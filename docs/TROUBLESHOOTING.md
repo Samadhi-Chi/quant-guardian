@@ -6,7 +6,7 @@ Check the component:
 
 - A broker session unavailable while QMT processes are healthy should be shown as idle outside a trading day.
 - Missing or crashed QMT processes remain a real fault even on a closed day.
-- Fuel, Aqua, Zeus or Rocket may be idle between scheduled jobs.
+- Fuel, Fusion, Aqua, Zeus or Rocket may be idle between scheduled jobs.
 
 Verify the schedule mode and calendar source in the status header. Manual open/closed overrides take precedence.
 

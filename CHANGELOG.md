@@ -2,6 +2,23 @@
 
 All notable changes are documented here. Versions follow semantic versioning; pre-release identifiers use the corresponding Python package form internally.
 
+## [0.5.0-beta.1] - 2026-09-06
+
+Quantclass Client 4.2.1 compatibility preview.
+
+### Added
+
+- Fusion selection-engine monitoring through exact processes, incremental logs and daily UI status files.
+- Automatic selection-engine detection with explicit Fusion, Zeus and Aqua compatibility overrides.
+- Safe in-memory migration of legacy v0.4 Zeus defaults when a Fusion installation is present.
+- Fusion task result, status-file and detection-source evidence in the hierarchical Trade System status.
+
+### Changed
+
+- Updated the tested Quantclass baseline to Client 4.2.1 with Fusion 3.0.2/3.0.2a while retaining Client 4.1.1 compatibility.
+- Updated the Windows UI, monitoring chart labels, configuration example and documentation for Fusion.
+- Added Fusion and SCM to the remote-control deny list; automatic recovery remains QMT-only.
+
 ## [0.4.0-beta.1] - 2026-08-19
 
 Messaging gateway preview.
@@ -44,3 +61,4 @@ First public preview.
 
 [0.3.0-beta.1]: https://github.com/Samadhi-Chi/quant-guardian/releases/tag/v0.3.0-beta.1
 [0.4.0-beta.1]: https://github.com/Samadhi-Chi/quant-guardian/releases/tag/v0.4.0-beta.1
+[0.5.0-beta.1]: https://github.com/Samadhi-Chi/quant-guardian/releases/tag/v0.5.0-beta.1

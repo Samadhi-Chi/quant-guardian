@@ -56,7 +56,7 @@ class QuantclassControllerTests(unittest.TestCase):
             self.assertIn("路径与配置不一致", result.reason)
             popen.assert_not_called()
 
-    def test_never_targets_fuel_zeus_or_rocket_process_names(self) -> None:
+    def test_never_targets_any_trade_kernel_process_names(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             controller = self.make_controller(directory)
             expected = {
@@ -65,7 +65,16 @@ class QuantclassControllerTests(unittest.TestCase):
             }
             self.assertEqual(expected, {"quantclass.exe"})
             self.assertTrue(
-                expected.isdisjoint({"fuel.exe", "zeus.exe", "rocket.exe"})
+                expected.isdisjoint(
+                    {
+                        "fuel.exe",
+                        "fusion.exe",
+                        "scm.exe",
+                        "aqua.exe",
+                        "zeus.exe",
+                        "rocket.exe",
+                    }
+                )
             )
 
     def test_restart_fails_closed_without_psutil_or_executable(self) -> None:

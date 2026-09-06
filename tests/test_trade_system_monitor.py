@@ -22,6 +22,8 @@ class TradeSystemMonitorTests(unittest.TestCase):
             fuel_update_file="fuel/update.json",
             aqua_log_file="logs/aqua.log",
             zeus_log_file="logs/zeus.log",
+            fusion_log_file="logs/fusion.log",
+            selection_status_directory="status",
             rocket_log_directory="logs/rocket",
             data_overdue_grace_seconds=60,
             data_stall_confirmation_seconds=300,
@@ -49,6 +51,57 @@ class TradeSystemMonitorTests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    @staticmethod
+    def selection_child(observation, engine: str):
+        return next(
+            child
+            for child in observation.selection.children
+            if child.metrics.get("engine") == engine
+        )
+
+    @staticmethod
+    def write_task_status(
+        root: Path,
+        engine: str,
+        *,
+        started_at: datetime,
+        ended_at: datetime | None,
+        running: bool,
+    ) -> Path:
+        status_directory = root / "status"
+        status_directory.mkdir(parents=True, exist_ok=True)
+        path = status_directory / f"{engine}-stats-{started_at:%Y-%m-%d}.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "start_time": started_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    "end_time": (
+                        ended_at.strftime("%Y-%m-%d %H:%M:%S")
+                        if ended_at
+                        else None
+                    ),
+                    "is_running": running,
+                    "command": "select",
+                    "stats": [
+                        {
+                            "tag": "SELECT_CLOSE",
+                            "time": [
+                                started_at.strftime("%Y-%m-%d %H:%M:%S"),
+                                (
+                                    ended_at.strftime("%Y-%m-%d %H:%M:%S")
+                                    if ended_at
+                                    else None
+                                ),
+                            ],
+                            "messages": [],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
     def test_zeus_error_followed_by_success_exit_remains_critical(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -72,12 +125,181 @@ class TradeSystemMonitorTests(unittest.TestCase):
                     rocket=RocketObservation(False, False, "Rocket空闲"),
                     active_window=False,
                 )
-            zeus = observation.selection.children[1]
+            zeus = self.selection_child(observation, "Zeus")
             self.assertEqual(zeus.state, ComponentState.CRITICAL)
             self.assertIn("Usecols", zeus.reason)
             self.assertEqual(observation.selection.state, ComponentState.CRITICAL)
             self.assertEqual(observation.selection.metrics["engine"], "Zeus")
             self.assertEqual(observation.order.state, ComponentState.IDLE)
+
+    def test_auto_detects_running_fusion_over_stale_zeus(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            now = datetime.now().astimezone().replace(microsecond=0)
+            self.write_fuel(root, now)
+            (root / "logs").mkdir()
+            (root / "logs" / "zeus.log").write_text(
+                f"{now - timedelta(hours=2):%Y-%m-%d %H:%M:%S} - "
+                "[zeus] pid 12 exit successfully\n",
+                encoding="utf-8",
+            )
+            (root / "logs" / "fusion.log").write_text(
+                f"{now:%Y-%m-%d %H:%M:%S} - [fusion] pid 34 start\n",
+                encoding="utf-8",
+            )
+            self.write_task_status(
+                root,
+                "fusion",
+                started_at=now,
+                ended_at=None,
+                running=True,
+            )
+            config = self.make_config(root)
+            config.selection_engine = "auto"
+
+            def active_processes(names: list[str]) -> list[dict[str, object]]:
+                if "fusion.exe" in names:
+                    return [{"pid": 34, "name": "fusion.exe", "command": "select trading"}]
+                return []
+
+            with patch.object(
+                TradeSystemMonitor,
+                "_active_processes",
+                side_effect=active_processes,
+            ):
+                observation = TradeSystemMonitor(config).observe(
+                    now,
+                    rocket=RocketObservation(False, False, "Rocket空闲"),
+                    active_window=False,
+                )
+            fusion = self.selection_child(observation, "Fusion")
+            zeus = self.selection_child(observation, "Zeus")
+            self.assertEqual(observation.selection.state, ComponentState.HEALTHY)
+            self.assertEqual(observation.selection.metrics["engine"], "Fusion")
+            self.assertEqual(
+                observation.selection.metrics["detection_source"],
+                "running_process",
+            )
+            self.assertTrue(fusion.metrics["selected"])
+            self.assertFalse(zeus.metrics["selected"])
+
+    def test_auto_detects_completed_fusion_from_status_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            now = datetime.now().astimezone().replace(microsecond=0)
+            self.write_fuel(root, now)
+            ended_at = now - timedelta(minutes=1)
+            self.write_task_status(
+                root,
+                "fusion",
+                started_at=now - timedelta(minutes=12),
+                ended_at=ended_at,
+                running=False,
+            )
+            config = self.make_config(root)
+            config.selection_engine = "auto"
+            with patch.object(TradeSystemMonitor, "_active_processes", return_value=[]):
+                observation = TradeSystemMonitor(config).observe(
+                    now,
+                    rocket=RocketObservation(False, False, "Rocket空闲"),
+                    active_window=False,
+                )
+            fusion = self.selection_child(observation, "Fusion")
+            self.assertEqual(observation.selection.state, ComponentState.IDLE)
+            self.assertEqual(observation.selection.metrics["engine"], "Fusion")
+            self.assertEqual(fusion.metrics["last_result"], "success")
+            self.assertEqual(
+                observation.selection.metrics["detection_source"],
+                "latest_status_or_log",
+            )
+
+    def test_half_written_fusion_status_keeps_last_valid_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            now = datetime.now().astimezone().replace(microsecond=0)
+            self.write_fuel(root, now)
+            status_path = self.write_task_status(
+                root,
+                "fusion",
+                started_at=now - timedelta(minutes=10),
+                ended_at=now - timedelta(minutes=1),
+                running=False,
+            )
+            config = self.make_config(root)
+            config.selection_engine = "auto"
+            monitor = TradeSystemMonitor(config)
+            rocket = RocketObservation(False, False, "Rocket空闲")
+            with patch.object(TradeSystemMonitor, "_active_processes", return_value=[]):
+                first = monitor.observe(now, rocket=rocket, active_window=False)
+                status_path.write_text("{", encoding="utf-8")
+                second = monitor.observe(
+                    now + timedelta(seconds=5),
+                    rocket=rocket,
+                    active_window=False,
+                )
+            self.assertEqual(first.selection.metrics["engine"], "Fusion")
+            self.assertEqual(second.selection.metrics["engine"], "Fusion")
+            self.assertEqual(
+                self.selection_child(second, "Fusion").metrics["last_result"],
+                "success",
+            )
+
+    def test_recent_running_status_without_process_is_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            now = datetime.now().astimezone().replace(microsecond=0)
+            self.write_fuel(root, now)
+            self.write_task_status(
+                root,
+                "fusion",
+                started_at=now - timedelta(minutes=10),
+                ended_at=None,
+                running=True,
+            )
+            config = self.make_config(root)
+            config.selection_engine = "auto"
+            with patch.object(TradeSystemMonitor, "_active_processes", return_value=[]):
+                observation = TradeSystemMonitor(config).observe(
+                    now,
+                    rocket=RocketObservation(False, False, "Rocket空闲"),
+                    active_window=False,
+                )
+            self.assertEqual(observation.selection.state, ComponentState.WARNING)
+            self.assertIn("未检测到对应进程", observation.selection.reason)
+
+    def test_explicit_legacy_engine_overrides_fusion_auto_detection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            now = datetime.now().astimezone().replace(microsecond=0)
+            self.write_fuel(root, now)
+            (root / "logs").mkdir()
+            (root / "logs" / "fusion.log").write_text(
+                f"{now:%Y-%m-%d %H:%M:%S} - [fusion] pid 34 start\n",
+                encoding="utf-8",
+            )
+            config = self.make_config(root)
+            config.selection_engine = "zeus"
+
+            def active_processes(names: list[str]) -> list[dict[str, object]]:
+                if "fusion.exe" in names:
+                    return [{"pid": 34, "name": "fusion.exe", "command": "select trading"}]
+                return []
+
+            with patch.object(
+                TradeSystemMonitor,
+                "_active_processes",
+                side_effect=active_processes,
+            ):
+                observation = TradeSystemMonitor(config).observe(
+                    now,
+                    rocket=RocketObservation(False, False, "Rocket空闲"),
+                    active_window=False,
+                )
+            self.assertEqual(observation.selection.metrics["engine"], "Zeus")
+            self.assertEqual(
+                observation.selection.metrics["detection_source"], "configured"
+            )
+            self.assertFalse(self.selection_child(observation, "Fusion").metrics["selected"])
 
     def test_half_written_fuel_json_keeps_last_valid_result(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -106,8 +328,13 @@ class TradeSystemMonitorTests(unittest.TestCase):
                     active_window=False,
                 )
             self.assertEqual(observation.selection.state, ComponentState.IDLE)
-            self.assertEqual(observation.selection.children[0].state, ComponentState.IDLE)
-            self.assertEqual(observation.selection.children[1].state, ComponentState.IDLE)
+            self.assertTrue(
+                all(
+                    child.state is ComponentState.IDLE
+                    for child in observation.selection.children
+                )
+            )
+            self.assertEqual(len(observation.selection.children), 3)
             self.assertEqual(observation.order.state, ComponentState.IDLE)
             self.assertEqual(observation.order.metrics["engine"], "Rocket")
             self.assertFalse(observation.order.children)
@@ -548,8 +775,9 @@ class TradeSystemMonitorTests(unittest.TestCase):
                 )
             self.assertEqual(observation.selection.metrics["engine"], "Aqua")
             self.assertEqual(observation.selection.state, ComponentState.IDLE)
-            self.assertEqual(observation.selection.children[1].state, ComponentState.CRITICAL)
-            self.assertFalse(observation.selection.children[1].metrics["selected"])
+            zeus = self.selection_child(observation, "Zeus")
+            self.assertEqual(zeus.state, ComponentState.CRITICAL)
+            self.assertFalse(zeus.metrics["selected"])
             self.assertEqual(observation.node.state, ComponentState.HEALTHY)
 
 

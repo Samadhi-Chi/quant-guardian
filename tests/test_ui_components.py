@@ -64,7 +64,7 @@ class UiComponentTests(unittest.TestCase):
             for label in dialog.findChildren(QLabel)
         )
         self.assertIn("Rocket当前处于活动状态", rendered)
-        self.assertIn("Fuel、Zeus与Rocket进程不会", rendered)
+        self.assertIn("Fuel、Fusion、Aqua、Zeus与Rocket进程不会", rendered)
 
     def test_first_run_navigation_saves_observe_mode_without_sentinel(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

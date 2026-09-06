@@ -201,7 +201,7 @@ class QuantclassRestartConfirmDialog(QDialog):
         warning_copy = QLabel(
             "Rocket当前处于活动状态。重启客户端可能影响实盘操作，请确认已完成必要核对。"
             if rocket_active
-            else "客户端重启期间，Quantclass界面和任务调度可能短暂不可用；Fuel、Zeus与Rocket进程不会被Quant Guardian主动终止。"
+            else "客户端重启期间，Quantclass界面和任务调度可能短暂不可用；Fuel、Fusion、Aqua、Zeus与Rocket进程不会被Quant Guardian主动终止。"
         )
         warning_copy.setObjectName("cardCaption")
         warning_copy.setWordWrap(True)

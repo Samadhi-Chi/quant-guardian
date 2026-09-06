@@ -6,7 +6,8 @@
 |---|---:|---|
 | Windows | Windows 10 / 11 x64 | Supported |
 | QMT | 2.0.23.0 | Tested baseline |
-| Quantclass Client | 4.1.1 | Tested for monitoring |
+| Quantclass Client | 4.2.1 with Fusion 3.0.2/3.0.2a | Tested for process, log and UI-status monitoring |
+| Quantclass Client (legacy) | 4.1.1 with Zeus/Aqua | Compatibility monitoring retained |
 | XTQuant | 250807.1.2 | Tested in isolated Python 3.11 worker |
 | Python source runtime | 3.11–3.14 x64 | Supported range |
 | PySide6 | 6.11.1 | Release baseline |
