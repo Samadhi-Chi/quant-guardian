@@ -33,7 +33,8 @@ class QuantclassController:
     """Operator-only controller for the Quantclass desktop client.
 
     It deliberately targets only the configured Electron executable. Fuel,
-    Aqua, Zeus and Rocket processes are not selected or terminated here.
+    Fusion, SCM, Aqua, Zeus and Rocket processes are not selected or terminated
+    here.
     """
 
     def __init__(self, config: AppConfig) -> None:

@@ -5,7 +5,7 @@ Quant Guardian treats monitoring and recovery as different privileges.
 ## Invariants
 
 1. Automatic recovery targets QMT only.
-2. Quantclass, Fuel, Aqua, Zeus and Rocket are never automatically started, stopped or repaired.
+2. Quantclass, Fuel, Fusion, SCM, Aqua, Zeus and Rocket are never automatically started, stopped or repaired.
 3. Trade System-only failures cannot trigger QMT recovery.
 4. A log line alone cannot trigger recovery.
 5. External network failure cannot trigger recovery.
@@ -39,7 +39,7 @@ Low-frequency order/trade/position counts are display evidence only. Their timeo
 Trade System health is evaluated independently:
 
 - Fuel uses recent task result and data freshness.
-- Aqua or Zeus uses the configured selection engine's last result and output freshness.
+- Fusion (Quantclass 4.2.1+) is auto-detected from its process, log and UI status file; Aqua and Zeus remain explicit compatibility options.
 - Rocket uses its own process and incremental log heartbeat.
 
 Batch components may be idle. Absence of a continuously running process outside its expected task is not automatically a fault.

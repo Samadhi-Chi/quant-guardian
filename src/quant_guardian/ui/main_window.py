@@ -188,6 +188,15 @@ def _line(value: object) -> QLineEdit:
     return editor
 
 
+def _selection_label(value: object) -> str:
+    return {
+        "auto": "自动识别",
+        "fusion": "Fusion",
+        "zeus": "Zeus",
+        "aqua": "Aqua",
+    }.get(str(value).casefold(), str(value).title())
+
+
 def _spin(value: int, minimum: int, maximum: int, suffix: str = "") -> QSpinBox:
     editor = QSpinBox()
     editor.setRange(minimum, maximum)
@@ -406,22 +415,22 @@ class MainWindow(QMainWindow):
             actions=(self.qmt_check_button, self.qmt_restart_button),
         )
         self.trade_check_button = _button("检测", "refresh")
-        self.trade_check_button.setToolTip("立即检测Fuel、选股内核与Rocket状态")
+        self.trade_check_button.setToolTip("立即检测Fuel、Fusion/兼容选股内核与Rocket状态")
         self.trade_check_button.clicked.connect(lambda: self._run_check("trade"))
         self.trade_restart_button = _button("重启", "repair")
         self.trade_restart_button.setToolTip(
-            "确认后人工重启Quantclass客户端；不会主动终止Fuel、Zeus或Rocket"
+            "确认后人工重启Quantclass客户端；不会主动终止Fuel、Fusion、Aqua、Zeus或Rocket"
         )
         self.trade_restart_button.clicked.connect(self.manual_restart_trade_system)
         self.trade_card = ComponentGroupCard(
             "Trade System",
-            "Fuel 数据、Aqua/Zeus 选股与 Rocket 下单",
+            "Fuel 数据、Fusion 选股与 Rocket 下单（兼容 Aqua/Zeus）",
             "layers",
             (
                 ("trade_system.data", "数据内核 · Fuel", "database"),
                 (
                     "trade_system.selection",
-                    f"选股内核 · {self.config.trade_system.selection_engine.title()}",
+                    f"选股内核 · {_selection_label(self.config.trade_system.selection_engine)}",
                     "terminal",
                 ),
                 ("trade_system.order", "下单内核 · Rocket", "rocket"),
@@ -915,7 +924,7 @@ class MainWindow(QMainWindow):
     def _settings_paths(self) -> QScrollArea:
         scroll, layout = self._settings_scroll(
             "QMT API 与 Trade System 路径",
-            "Trade System 只读监控 Fuel、Aqua、Zeus 和 Rocket，不会启动或修复它们。",
+            "Trade System 只读监控 Fuel、Fusion、兼容选股内核与 Rocket，不会启动或修复它们。",
         )
         qmt, qmt_layout = _section_frame("QMT API")
         qmt_form = _form()
@@ -938,8 +947,10 @@ class MainWindow(QMainWindow):
         self.trade_enabled = QCheckBox("启用 Trade System 只读监控")
         self.trade_enabled.setChecked(self.config.trade_system.enabled)
         self.selection_engine = QComboBox()
-        self.selection_engine.addItem("Zeus（当前）", "zeus")
-        self.selection_engine.addItem("Aqua", "aqua")
+        self.selection_engine.addItem("自动识别（推荐）", "auto")
+        self.selection_engine.addItem("Fusion（Quantclass 4.2.1+）", "fusion")
+        self.selection_engine.addItem("Zeus（兼容旧版）", "zeus")
+        self.selection_engine.addItem("Aqua（兼容旧版）", "aqua")
         self.selection_engine.setCurrentIndex(
             max(
                 0,
@@ -952,8 +963,12 @@ class MainWindow(QMainWindow):
         self.quantclass_executable = _line(self.config.trade_system.client_executable)
         self.quantclass_config = _line(self.config.trade_system.quantclass_config)
         self.fuel_status = _line(self.config.trade_system.fuel_status_file)
+        self.fusion_log = _line(self.config.trade_system.fusion_log_file)
         self.aqua_log = _line(self.config.trade_system.aqua_log_file)
         self.zeus_log = _line(self.config.trade_system.zeus_log_file)
+        self.selection_status_directory = _line(
+            self.config.trade_system.selection_status_directory
+        )
         self.rocket_log = _line(self.config.trade_system.rocket_log_directory)
         trade_form.addRow("组件", self.trade_enabled)
         trade_form.addRow("当前选股内核", self.selection_engine)
@@ -961,8 +976,10 @@ class MainWindow(QMainWindow):
         trade_form.addRow("Quantclass 客户端", self.quantclass_executable)
         trade_form.addRow("Quantclass 配置", self.quantclass_config)
         trade_form.addRow("Fuel 状态", self.fuel_status)
-        trade_form.addRow("Aqua 日志", self.aqua_log)
-        trade_form.addRow("Zeus 日志", self.zeus_log)
+        trade_form.addRow("Fusion 日志", self.fusion_log)
+        trade_form.addRow("选股状态目录", self.selection_status_directory)
+        trade_form.addRow("Zeus 日志（兼容）", self.zeus_log)
+        trade_form.addRow("Aqua 日志（兼容）", self.aqua_log)
         trade_form.addRow("Rocket 日志目录", self.rocket_log)
         trade_layout.addLayout(trade_form)
         layout.addWidget(trade)
@@ -1181,7 +1198,7 @@ class MainWindow(QMainWindow):
         boundary, boundary_layout = _section_frame("能力边界")
         boundary_copy = QLabel(
             "允许：播报、状态、检测、故障、操作记录、二次确认后的 QMT 受控重启。\n"
-            "禁止：Quantclass/Fuel/Aqua/Zeus/Rocket 启停、下单、撤单、策略修改、文件读取、Shell 与任意命令。"
+            "禁止：Quantclass/Fuel/Fusion/SCM/Aqua/Zeus/Rocket 启停、下单、撤单、策略修改、文件读取、Shell 与任意命令。"
         )
         boundary_copy.setObjectName("cardCaption")
         boundary_copy.setWordWrap(True)
@@ -2059,7 +2076,19 @@ class MainWindow(QMainWindow):
         )
         self.availability_metric.set_value(availability, coverage)
         self.latency_metric.set_value(p95, f"平均 {average} / P95 {p95}")
-        selection_name = self.config.trade_system.selection_engine.title()
+        selection_name = _selection_label(self.config.trade_system.selection_engine)
+        trade_component = (self._last_status.components or {}).get("trade_system", {})
+        trade_children = (
+            trade_component.get("children", [])
+            if isinstance(trade_component, dict)
+            else []
+        )
+        for child in trade_children if isinstance(trade_children, list) else []:
+            if isinstance(child, dict) and child.get("id") == "trade_system.selection":
+                metrics = child.get("metrics")
+                if isinstance(metrics, dict) and metrics.get("engine"):
+                    selection_name = str(metrics["engine"])
+                break
         self.trade_metric.set_value(trade, f"Fuel / {selection_name} 选股 / Rocket 下单")
         self.incident_metric.set_value(incidents, coverage)
 
@@ -2107,7 +2136,21 @@ class MainWindow(QMainWindow):
                 self._history.append(sample)
         self.state_hero.update_status(status)
         self.qmt_card.update_component(components.get("qmt_api", {}))
-        self.trade_card.update_component(components.get("trade_system", {}))
+        trade_component = components.get("trade_system", {})
+        self.trade_card.update_component(trade_component)
+        trade_children = (
+            trade_component.get("children", [])
+            if isinstance(trade_component, dict)
+            else []
+        )
+        for child in trade_children if isinstance(trade_children, list) else []:
+            if isinstance(child, dict) and child.get("id") == "trade_system.selection":
+                metrics = child.get("metrics")
+                if isinstance(metrics, dict) and metrics.get("engine"):
+                    self.trade_card.rows[
+                        "trade_system.selection"
+                    ].name_label.setText(f"选股内核 · {metrics['engine']}")
+                break
         if not self._operation_in_progress:
             restart_pending = status.state in {
                 GuardianState.RECOVERING,
@@ -2216,7 +2259,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Quantclass重启完成",
-                "Quantclass客户端已重新启动。Fuel、Zeus与Rocket进程未被Quant Guardian主动终止。",
+                "Quantclass客户端已重新启动。Fuel、Fusion、Aqua、Zeus与Rocket进程未被Quant Guardian主动终止。",
             )
         elif name == "save":
             QMessageBox.information(self, "设置已保存", "配置已写入，新的监控频率会在下一轮生效。")
@@ -2279,14 +2322,18 @@ class MainWindow(QMainWindow):
             self.config.trade_system.enabled = self.trade_enabled.isChecked()
             self.config.trade_system.selection_engine = str(self.selection_engine.currentData())
             self.trade_card.rows["trade_system.selection"].name_label.setText(
-                f"选股内核 · {self.config.trade_system.selection_engine.title()}"
+                f"选股内核 · {_selection_label(self.config.trade_system.selection_engine)}"
             )
             self.config.trade_system.data_root = self.trade_root.text().strip()
             self.config.trade_system.client_executable = self.quantclass_executable.text().strip()
             self.config.trade_system.quantclass_config = self.quantclass_config.text().strip()
             self.config.trade_system.fuel_status_file = self.fuel_status.text().strip()
+            self.config.trade_system.fusion_log_file = self.fusion_log.text().strip()
             self.config.trade_system.aqua_log_file = self.aqua_log.text().strip()
             self.config.trade_system.zeus_log_file = self.zeus_log.text().strip()
+            self.config.trade_system.selection_status_directory = (
+                self.selection_status_directory.text().strip()
+            )
             self.config.trade_system.rocket_log_directory = self.rocket_log.text().strip()
             self.config.monitoring.active_start = self.active_start.time().toString("HH:mm")
             self.config.monitoring.active_end = self.active_end.time().toString("HH:mm")

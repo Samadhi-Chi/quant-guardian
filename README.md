@@ -8,7 +8,7 @@ Quant Guardian 是一个独立的 Windows 桌面监控工具，用于观察 QMT 
 [![CodeQL](https://github.com/Samadhi-Chi/quant-guardian/actions/workflows/codeql.yml/badge.svg)](https://github.com/Samadhi-Chi/quant-guardian/actions/workflows/codeql.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-> **公开预览版提示：** v0.4.0-beta.1 尚未进行代码签名，Windows SmartScreen 可能提示未知发布者。应用、消息 Gateway 与远程控制均采用保守默认值；在实盘环境启用任何恢复能力前，必须完成本机验证并理解风险。
+> **公开预览版提示：** v0.5.0-beta.1 尚未进行代码签名，Windows SmartScreen 可能提示未知发布者。应用、消息 Gateway 与远程控制均采用保守默认值；在实盘环境启用任何恢复能力前，必须完成本机验证并理解风险。
 
 ## 界面预览
 
@@ -40,9 +40,9 @@ Quant Guardian 是一个独立的 Windows 桌面监控工具，用于观察 QMT 
 
 从 [GitHub Releases](https://github.com/Samadhi-Chi/quant-guardian/releases) 下载最新的 Windows x64 预览版：
 
-- Quant-Guardian-v0.4.0-beta.1-windows-x64.zip
-- Quant-Guardian-v0.4.0-beta.1-SHA256SUMS.txt
-- Quant-Guardian-v0.4.0-beta.1-SBOM.cdx.json
+- Quant-Guardian-v0.5.0-beta.1-windows-x64.zip
+- Quant-Guardian-v0.5.0-beta.1-SHA256SUMS.txt
+- Quant-Guardian-v0.5.0-beta.1-SBOM.cdx.json
 
 下载后先核对 SHA-256，再解压到普通用户目录。ZIP 是可移植 one-folder 包，包含 `Quant Guardian.exe` 与隔离的 `Quant Guardian Gateway.exe`，但不包含 QMT、XTQuant、Quantclass、真实配置、凭据、日志或监控数据库。
 
@@ -52,10 +52,10 @@ Quant Guardian 是一个独立的 Windows 桌面监控工具，用于观察 QMT 
 |---|---|---|
 | QMT API | QMT 进程、XTQuant 会话、账户只读查询、委托/成交/持仓数量摘要 | 在安全条件满足时受控重启 QMT |
 | Trade System · 数据 | Fuel 最近任务、数据新鲜度、状态文件与增量日志 | 仅监控和提示 |
-| Trade System · 选股 | 当前选择的 Aqua 或 Zeus、最近选股结果与交易计划新鲜度 | 仅监控和提示 |
+| Trade System · 选股 | 自动识别 Fusion，兼容 Aqua/Zeus；汇总进程、日志与每日状态文件 | 仅监控和提示 |
 | Trade System · 下单 | Rocket 进程、日志心跳与执行状态 | 仅监控和提示 |
 
-Quant Guardian 不是交易策略，不会生成交易计划，不会下单或撤单。Aqua 与 Zeus 是可切换的选股内核；Rocket 是唯一的下单内核。自动恢复永远不会启动、停止或修复 Quantclass、Fuel、Aqua、Zeus 或 Rocket。
+Quant Guardian 不是交易策略，不会生成交易计划，不会下单或撤单。Quantclass Client 4.2.1 起由 Fusion 承担兼容原 Aqua/Zeus 配置的选股任务，旧内核仍可显式选择；Rocket 是唯一的下单内核。SCM 是配置工具，不作为交易链路健康条件。自动恢复永远不会启动、停止或修复 Quantclass、Fuel、Fusion、SCM、Aqua、Zeus 或 Rocket。
 
 ### 消息与远程操作
 
@@ -64,7 +64,7 @@ Quant Guardian 不是交易策略，不会生成交易计划，不会下单或�
 | Telegram | 官方 Bot API 长轮询 | 私聊播报、状态、检测、故障、操作记录、二次确认后的 QMT 重启 |
 | 个人微信 | 微信 iLink Bot 二维码登录与长轮询 | 私聊文本播报、同一组固定命令、一次性文字确认后的 QMT 重启 |
 
-Gateway 不包含 LLM、Agent、Shell、文件访问或自由文本执行器。每个通道只允许一个已配对的私聊；群聊在配置、适配器和命令层均禁用。远程端永远不能控制 Quantclass、Fuel、Aqua、Zeus 或 Rocket，也不能触发下单或撤单。
+Gateway 不包含 LLM、Agent、Shell、文件访问或自由文本执行器。每个通道只允许一个已配对的私聊；群聊在配置、适配器和命令层均禁用。远程端永远不能控制 Quantclass、Fuel、Fusion、SCM、Aqua、Zeus 或 Rocket，也不能触发下单或撤单。
 
 ## 快速开始
 
@@ -74,7 +74,7 @@ Gateway 不包含 LLM、Agent、Shell、文件访问或自由文本执行器。�
 2. 在 PowerShell 中校验：
 
 ~~~powershell
-Get-FileHash .\Quant-Guardian-v0.4.0-beta.1-windows-x64.zip -Algorithm SHA256
+Get-FileHash .\Quant-Guardian-v0.5.0-beta.1-windows-x64.zip -Algorithm SHA256
 ~~~
 
 3. 解压后直接运行 Quant Guardian\Quant Guardian.exe，或使用包内加固后的 scripts\install-app.ps1 安装到当前用户目录。
@@ -109,7 +109,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1 
 |---|---:|---|
 | Windows | Windows 10 / 11 x64 | 仅支持 Windows |
 | QMT | 2.0.23.0 | 其他版本未验证 |
-| Quantclass Client | 4.1.1 | 可选，仅监控 |
+| Quantclass Client | 4.2.1 + Fusion 3.0.2/3.0.2a；兼容 4.1.1 | 可选，仅监控；Fusion 自动识别 |
 | XTQuant | 250807.1.2 | 独立 Python 3.11 探针 |
 | Python 源码运行 | 3.11–3.14 x64 | Release 使用 Python 3.14 构建 |
 

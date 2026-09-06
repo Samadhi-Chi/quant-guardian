@@ -86,6 +86,8 @@ class GatewayCommandTests(unittest.TestCase):
         self.assertEqual(parse_command("重启 Quantclass").name, "forbidden_quantclass")
         self.assertEqual(parse_command("帮我下单").name, "forbidden")
         self.assertEqual(parse_command("powershell whoami").name, "forbidden")
+        self.assertEqual(parse_command("启动 Fusion").name, "forbidden")
+        self.assertEqual(parse_command("运行 SCM").name, "forbidden")
         self.assertEqual(parse_command("随便聊聊").name, "unknown")
 
     def test_status_is_read_only_and_group_is_rejected(self) -> None:

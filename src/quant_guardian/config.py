@@ -49,7 +49,7 @@ class RocketConfig:
 @dataclass(slots=True)
 class TradeSystemConfig:
     enabled: bool = True
-    selection_engine: str = "zeus"
+    selection_engine: str = "auto"
     data_root: str = r"C:\Quantclass\data"
     client_executable: str = r"C:\Quantclass\quantclass.exe"
     client_process_names: list[str] = field(
@@ -65,6 +65,9 @@ class TradeSystemConfig:
     aqua_log_file: str = r"real_trading\logs\aqua.log"
     zeus_process_names: list[str] = field(default_factory=lambda: ["zeus.exe"])
     zeus_log_file: str = r"real_trading\logs\zeus.log"
+    fusion_process_names: list[str] = field(default_factory=lambda: ["fusion.exe"])
+    fusion_log_file: str = r"real_trading\logs\fusion.log"
+    selection_status_directory: str = r"real_trading\data\ui_status"
     rocket_process_names: list[str] = field(
         default_factory=lambda: ["rocket.exe", "python.exe"]
     )
@@ -220,8 +223,15 @@ class AppConfig:
             errors.append("trade_system.client_executable must not be empty")
         if not self.trade_system.client_process_names:
             errors.append("trade_system.client_process_names must not be empty")
-        if str(self.trade_system.selection_engine).casefold() not in {"aqua", "zeus"}:
-            errors.append("trade_system.selection_engine must be 'aqua' or 'zeus'")
+        if str(self.trade_system.selection_engine).casefold() not in {
+            "auto",
+            "fusion",
+            "aqua",
+            "zeus",
+        }:
+            errors.append(
+                "trade_system.selection_engine must be 'auto', 'fusion', 'aqua' or 'zeus'"
+            )
         if self.rocket.business_heartbeat_stale_seconds < 30:
             errors.append("rocket.business_heartbeat_stale_seconds must be >= 30")
         if self.trade_system.data_stall_confirmation_seconds < 0:
@@ -380,10 +390,27 @@ def _discover_quantclass_data_root(path: Path) -> str:
     return walk(document)
 
 
+def _has_fusion_install(config: TradeSystemConfig) -> bool:
+    """Return whether the configured data root contains Fusion runtime evidence."""
+    root = Path(config.data_root)
+    direct_evidence = (
+        root / "code" / "fusion" / "fusion.exe",
+        root / config.fusion_log_file,
+    )
+    if any(path.is_file() for path in direct_evidence):
+        return True
+    status_directory = root / config.selection_status_directory
+    try:
+        return any(status_directory.glob("fusion-stats-*.json"))
+    except OSError:
+        return False
+
+
 def load_config(path: Path | None = None) -> AppConfig:
     config_path = path or default_config_path()
     config = AppConfig()
     migrated_document: dict[str, Any] | None = None
+    legacy_selection_config = False
     if config_path.exists():
         raw = json.loads(config_path.read_text(encoding="utf-8-sig"))
         if not isinstance(raw, dict):
@@ -392,6 +419,12 @@ def load_config(path: Path | None = None) -> AppConfig:
         if version == 1:
             migrated_document = _migrate_v1(raw)
             raw = migrated_document
+        trade_document = raw.get("trade_system")
+        legacy_selection_config = (
+            isinstance(trade_document, dict)
+            and "fusion_log_file" not in trade_document
+            and "fusion_process_names" not in trade_document
+        )
         _merge_dataclass(config, raw)
     if not config.probe.python_executable:
         private_python = app_data_dir() / "Python311" / "python.exe"
@@ -410,6 +443,17 @@ def load_config(path: Path | None = None) -> AppConfig:
         configured_root == default_root or not configured_root.is_dir()
     ):
         config.trade_system.data_root = discovered_root
+    # v0.4 configurations could only name Aqua or Zeus. Quantclass Client 4.2.1
+    # replaced that scheduler path with Fusion. Treat the old Zeus value as the
+    # legacy default only when concrete Fusion runtime evidence exists. Once the
+    # user saves a new configuration, the new Fusion fields make an explicit
+    # Zeus choice authoritative again.
+    if (
+        legacy_selection_config
+        and str(config.trade_system.selection_engine).casefold() == "zeus"
+        and _has_fusion_install(config.trade_system)
+    ):
+        config.trade_system.selection_engine = "auto"
     # Keep deprecated fields coherent for one compatibility release.
     config.thresholds.poll_interval_seconds = config.monitoring.active_interval_seconds
     config.rocket.enabled = config.trade_system.enabled

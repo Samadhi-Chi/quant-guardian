@@ -23,7 +23,7 @@
   },
   "trade_system": {
     "enabled": true,
-    "selection_engine": "zeus",
+    "selection_engine": "auto",
     "data_root": "C:\\Quantclass\\data",
     "client_executable": "C:\\Quantclass\\quantclass.exe",
     "client_process_names": ["quantclass.exe"],
@@ -36,6 +36,9 @@
     "aqua_log_file": "real_trading\\logs\\aqua.log",
     "zeus_process_names": ["zeus.exe"],
     "zeus_log_file": "real_trading\\logs\\zeus.log",
+    "fusion_process_names": ["fusion.exe"],
+    "fusion_log_file": "real_trading\\logs\\fusion.log",
+    "selection_status_directory": "real_trading\\data\\ui_status",
     "rocket_process_names": ["rocket.exe", "python.exe"],
     "rocket_log_directory": "real_trading\\rocket\\data\\系统日志",
     "locker_directory": "real_trading\\data\\locker",

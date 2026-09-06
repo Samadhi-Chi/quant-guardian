@@ -1004,7 +1004,7 @@ class LatencyChartWidget(QWidget):
 
 
 class TaskOutcomeChartWidget(QWidget):
-    """Compact state ribbons for Fuel, Aqua/Zeus selection, and Rocket."""
+    """Compact state ribbons for Fuel, the selected engine, and Rocket."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1060,7 +1060,7 @@ class TaskOutcomeChartWidget(QWidget):
 
         lanes = (
             ("数据 · Fuel", lambda sample: sample.data_state),
-            ("选股 · Aqua / Zeus", lambda sample: sample.selection_state),
+            ("选股 · Fusion / 兼容内核", lambda sample: sample.selection_state),
             ("下单 · Rocket", lambda sample: sample.order_state),
         )
         left, right, top, bottom, gap = 150, 15, 45, 27, 10

@@ -18,8 +18,8 @@ SYNTHETIC_TELEGRAM_TOKEN = ("123456789:" + "AAA" + ("b" * 32)).encode()
 class ReleaseContractTests(unittest.TestCase):
     def test_version_has_single_source_and_matches_public_tag(self) -> None:
         validate_project_metadata()
-        self.assertEqual(__version__, "0.4.0b1")
-        self.assertEqual(release_tag(__version__), "v0.4.0-beta.1")
+        self.assertEqual(__version__, "0.5.0b1")
+        self.assertEqual(release_tag(__version__), "v0.5.0-beta.1")
 
     def test_build_scripts_support_ci_python_without_repository_venv(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
@@ -78,7 +78,7 @@ class ReleaseContractTests(unittest.TestCase):
             )
 
     def make_zip(self, path: Path, *, extra: dict[str, bytes] | None = None) -> None:
-        prefix = "Quant-Guardian-v0.4.0-beta.1-windows-x64/"
+        prefix = "Quant-Guardian-v0.5.0-beta.1-windows-x64/"
         remaining = dict(extra or {})
         with zipfile.ZipFile(path, "w") as archive:
             for name in REQUIRED_SUFFIXES:

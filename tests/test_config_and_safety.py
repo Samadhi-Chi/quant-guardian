@@ -22,15 +22,51 @@ class ConfigAndSafetyTests(unittest.TestCase):
             loaded = load_config(path)
             self.assertEqual(loaded.mode, "observe")
             self.assertEqual(loaded.qmt.process_names[0], "XtMiniQmt.exe")
-            self.assertEqual(loaded.trade_system.selection_engine, "zeus")
+            self.assertEqual(loaded.trade_system.selection_engine, "auto")
 
-    def test_selection_engine_must_be_aqua_or_zeus(self) -> None:
+    def test_selection_engine_must_be_supported_or_auto(self) -> None:
         config = AppConfig()
         config.trade_system.selection_engine = "other"
         self.assertIn(
-            "trade_system.selection_engine must be 'aqua' or 'zeus'",
+            "trade_system.selection_engine must be 'auto', 'fusion', 'aqua' or 'zeus'",
             config.validate(),
         )
+
+    def test_legacy_zeus_config_uses_auto_when_fusion_is_installed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "data"
+            fusion = root / "code" / "fusion" / "fusion.exe"
+            fusion.parent.mkdir(parents=True)
+            fusion.touch()
+            path = Path(directory) / "config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "trade_system": {
+                            "data_root": str(root),
+                            "selection_engine": "zeus",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            loaded = load_config(path)
+            self.assertEqual(loaded.trade_system.selection_engine, "auto")
+
+    def test_new_explicit_zeus_config_remains_authoritative(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "data"
+            fusion = root / "code" / "fusion" / "fusion.exe"
+            fusion.parent.mkdir(parents=True)
+            fusion.touch()
+            path = Path(directory) / "config.json"
+            config = AppConfig()
+            config.trade_system.data_root = str(root)
+            config.trade_system.selection_engine = "zeus"
+            save_config(config, path)
+            loaded = load_config(path)
+            self.assertEqual(loaded.trade_system.selection_engine, "zeus")
 
     def test_fuel_minute_data_sessions_require_ordered_time_ranges(self) -> None:
         config = AppConfig()

@@ -16,7 +16,7 @@ GuardianService + scheduler
         |
         +-- Trade System evidence
         |     +-- Fuel data freshness
-        |     +-- selected Aqua or Zeus result
+        |     +-- auto-detected Fusion or compatible Aqua/Zeus result
         |     +-- Rocket process/log heartbeat
         |
         +-- state machine + SafetyGate
@@ -47,7 +47,7 @@ GuardianService + scheduler
 7. It launches the configured official QMT executable.
 8. Stable process, XTQuant and account success is required before the incident is resolved.
 
-Quantclass recovery is a separate operator-only controller. It is never called by the automatic state machine and never targets Fuel, Aqua, Zeus or Rocket.
+Quantclass recovery is a separate operator-only controller. It is never called by the automatic state machine and never targets Fuel, Fusion, SCM, Aqua, Zeus or Rocket.
 
 ## Scheduling
 

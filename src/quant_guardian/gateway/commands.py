@@ -66,7 +66,19 @@ def parse_command(text: str) -> Command:
     }
     if lowered in aliases:
         return Command(aliases[lowered])
-    dangerous = ("下单", "撤单", "shell", "cmd", "powershell", "fuel", "aqua", "zeus", "rocket")
+    dangerous = (
+        "下单",
+        "撤单",
+        "shell",
+        "cmd",
+        "powershell",
+        "fuel",
+        "fusion",
+        "scm",
+        "aqua",
+        "zeus",
+        "rocket",
+    )
     if any(token in lowered for token in dangerous):
         return Command("forbidden")
     return Command("unknown")
@@ -163,7 +175,7 @@ class CommandProcessor:
                 "可用命令：\n"
                 "状态 / /status\n检测 / /check\n故障 / /incidents\n"
                 "操作 / /operations\n重启 QMT / /restart_qmt\n\n"
-                "只允许控制 QMT；Quantclass、Fuel、Aqua、Zeus、Rocket、下单和撤单均不开放。",
+                "只允许控制 QMT；Quantclass、Fuel、Fusion、SCM、Aqua、Zeus、Rocket、下单和撤单均不开放。",
                 command_name="help",
             )
         if command.name in {"forbidden", "forbidden_quantclass"}:
@@ -314,7 +326,7 @@ class CommandProcessor:
         base = (
             "即将执行 QMT 受控重启\n"
             f"{status_line}\n"
-            "范围：仅 QMT；不会重启 Quantclass，也不会操作 Fuel/Aqua/Zeus/Rocket。\n"
+            "范围：仅 QMT；不会重启 Quantclass，也不会操作 Fuel/Fusion/SCM/Aqua/Zeus/Rocket。\n"
             "提示：若 Rocket 正在运行，QMT 重启会暂时中断其连接；本次人工确认可继续，"
             "自动恢复仍会保持安全阻断。\n"
             f"确认有效期：{remote.confirmation_ttl_seconds} 秒。"
