@@ -31,8 +31,10 @@ from quant_guardian.ui.widgets import (
     LatencyChartWidget,
     TaskOutcomeChartWidget,
     compute_trend_metrics,
+    core_sample_ok,
     filter_samples,
     sample_from_document,
+    timeline_state,
 )
 
 BASE = datetime(2026, 8, 15, 9, 30, tzinfo=timezone(timedelta(hours=8)))
@@ -338,6 +340,38 @@ class UiComponentTests(unittest.TestCase):
             compute_trend_metrics([], "1h"),
             ("—", "—", "—", "—", "—", "等待数据"),
         )
+
+    def test_handoff_warning_is_amber_and_not_a_failed_core_sample(self) -> None:
+        document = {
+            "observed_at": BASE.isoformat(),
+            "state": "healthy",
+            "components": {
+                "qmt_api": {"state": "healthy"},
+                "trade_system": {
+                    "state": "warning",
+                    "children": [
+                        {"id": "trade_system.data", "state": "healthy"},
+                        {"id": "trade_system.selection", "state": "idle"},
+                        {"id": "trade_system.order", "state": "idle"},
+                        {"id": "trade_system.handoff", "state": "warning"},
+                    ],
+                },
+            },
+        }
+        sample = sample_from_document(document)
+        self.assertEqual(timeline_state(sample, "trade_system"), "warning")
+        self.assertTrue(core_sample_ok(sample))
+        self.assertEqual(compute_trend_metrics([sample], "1h")[3], "100.0%")
+
+    def test_unknown_core_evidence_is_not_counted_as_success(self) -> None:
+        sample = HealthSample(
+            at=BASE, state=GuardianState.HEALTHY, qmt_ok=True,
+            trade_ok=True, latency_ms=None, data_state="healthy",
+            selection_state="unknown", order_state="idle",
+        )
+        self.assertIsNone(core_sample_ok(sample))
+        self.assertEqual(compute_trend_metrics([sample], "1h")[3], "—")
+        self.assertEqual(timeline_state(sample, "qmt_api"), "healthy")
 
     def test_gateway_activity_uses_message_result_labels(self) -> None:
         model = GatewayActivityTableModel()

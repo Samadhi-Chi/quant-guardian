@@ -218,7 +218,7 @@ class ProbeSupervisor:
                 return ProbeObservation(ProbeStatus.FAILED, "probe response ID mismatch")
             if response.fatal:
                 self._stop_locked()
-            status = ProbeStatus.HEALTHY if response.ok else ProbeStatus.FAILED
+            status = response_status(response)
             if status is ProbeStatus.HEALTHY:
                 self._consecutive_timeouts = 0
             return ProbeObservation(
@@ -249,3 +249,26 @@ class ProbeSupervisor:
             start_date=start_date,
             end_date=end_date,
         )
+
+
+def response_status(response: ProbeResponse) -> ProbeStatus:
+    if response.status in {"capability_disabled", "permission_required", "partial", "not_applicable", "timeout", "unavailable"}:
+        return ProbeStatus(response.status)
+    return ProbeStatus.HEALTHY if response.ok else ProbeStatus.FAILED
+
+
+def create_probe(probe_config: ProbeConfig, qmt_config: QmtConfig) -> ProbeSupervisor:
+    if qmt_config.access_mode == "planA":
+        from quant_guardian.probe.broker_supervisor import BrokerProbeSupervisor
+
+        return BrokerProbeSupervisor(probe_config, qmt_config)
+    if qmt_config.access_mode in {"planX", "qmt", "unknown"}:
+        return PassiveProbeSupervisor(probe_config, qmt_config)
+    return ProbeSupervisor(probe_config, qmt_config)
+
+
+class PassiveProbeSupervisor(ProbeSupervisor):
+    def _request(self, operation: str, **kwargs) -> ProbeObservation:
+        if self.qmt_config.access_mode == "planX":
+            return ProbeObservation(ProbeStatus.NOT_APPLICABLE, "Plan X 无外部账户查询，执行结果待核对")
+        return ProbeObservation(ProbeStatus.UNAVAILABLE, "当前模式没有已验证的只读适配器")

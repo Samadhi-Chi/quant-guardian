@@ -43,6 +43,10 @@ class ProbeStatus(StrEnum):
     STARTING = "starting"
     UNAVAILABLE = "unavailable"
     UNKNOWN = "unknown"
+    PARTIAL = "partial"
+    NOT_APPLICABLE = "not_applicable"
+    PERMISSION_REQUIRED = "permission_required"
+    CAPABILITY_DISABLED = "capability_disabled"
 
 
 class LogSignal(StrEnum):
@@ -96,7 +100,7 @@ class HealthSnapshot:
     def is_healthy(self) -> bool:
         return (
             self.process_status is ProcessStatus.HEALTHY
-            and self.probe_status is ProbeStatus.HEALTHY
+            and self.probe_status in {ProbeStatus.HEALTHY, ProbeStatus.NOT_APPLICABLE}
             and self.log_signal
             not in {LogSignal.EXPLICIT_DISCONNECT, LogSignal.LOGIN_FAILURE}
             and self.network_available

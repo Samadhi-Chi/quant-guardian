@@ -60,12 +60,36 @@ def _window_responsive(pid: int) -> bool:
     return not all(bool(user32.IsHungAppWindow(hwnd)) for hwnd in windows)
 
 
+def _limited_process_path(pid: int) -> str:
+    """Query identity without requesting access to elevated process memory."""
+    if os.name != "nt":
+        return ""
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return ""
+    try:
+        size = wintypes.DWORD(32768)
+        buffer = ctypes.create_unicode_buffer(size.value)
+        return buffer.value if kernel.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)) else ""
+    finally:
+        kernel.CloseHandle(handle)
+
+
 class QmtProcessMonitor:
     def __init__(self, config: QmtConfig) -> None:
         self.config = config
         self.expected_directory = Path(config.launcher).parent
         self.expected_names = {name.casefold() for name in config.process_names}
-        self.main_name = "xtminiqmt.exe"
+        self.main_name = config.main_process_name.casefold()
 
     def observe(self) -> ProcessObservation:
         if psutil is None:
@@ -76,6 +100,7 @@ class QmtProcessMonitor:
             )
         valid: list[ProcessIdentity] = []
         mismatched: list[ProcessIdentity] = []
+        unverifiable_main = False
         for process in psutil.process_iter(["pid", "name", "exe", "create_time"]):
             try:
                 info: dict[str, Any] = process.info
@@ -83,6 +108,11 @@ class QmtProcessMonitor:
                 if name.casefold() not in self.expected_names:
                     continue
                 executable = str(info.get("exe") or "")
+                if not executable:
+                    executable = _limited_process_path(int(info["pid"]))
+                if not executable:
+                    unverifiable_main |= name.casefold() == self.main_name
+                    continue
                 identity = ProcessIdentity(
                     pid=int(info["pid"]),
                     name=name,
@@ -97,6 +127,11 @@ class QmtProcessMonitor:
             except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
                 continue
 
+        if unverifiable_main:
+            return ProcessObservation(
+                ProcessStatus.UNKNOWN, tuple(valid),
+                "已发现QMT进程，但权限不足以确认路径；禁止当作进程缺失或自动重启",
+            )
         if mismatched and not valid:
             return ProcessObservation(
                 ProcessStatus.IDENTITY_MISMATCH,
@@ -108,7 +143,7 @@ class QmtProcessMonitor:
             return ProcessObservation(
                 ProcessStatus.MISSING,
                 tuple(valid),
-                "XtMiniQmt.exe was not found in the configured directory",
+                f"{self.config.main_process_name} was not found in the configured directory",
             )
         if not main.responsive:
             return ProcessObservation(

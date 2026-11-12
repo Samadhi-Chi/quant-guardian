@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "0.5.0b2",
-    [string]$ReleaseTag = "v0.5.0-beta.2",
+    [string]$Version = "",
+    [string]$ReleaseTag = "",
     [string]$Python = "",
     [switch]$SkipBuild
 )
@@ -27,6 +27,11 @@ Push-Location $ProjectRoot
 try {
     $ActualVersion = (& $Python ".\scripts\check_version.py" --version).Trim()
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    if (-not $Version) { $Version = $ActualVersion }
+    if (-not $ReleaseTag) {
+        $ReleaseTag = (& $Python ".\scripts\check_version.py").Trim()
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
     if ($ActualVersion -ne $Version) {
         throw "Package version mismatch. Expected $Version, found $ActualVersion"
     }
@@ -65,7 +70,7 @@ try {
     New-Item -ItemType Directory -Path $Stage -Force | Out-Null
     Copy-Item -LiteralPath $BuiltApplication -Destination (Join-Path $Stage "Quant Guardian") -Recurse
     New-Item -ItemType Directory -Path (Join-Path $Stage "scripts") -Force | Out-Null
-    foreach ($Script in @("install-app.ps1", "uninstall-app.ps1", "InstallSafety.psm1")) {
+    foreach ($Script in @("install-app.ps1", "uninstall-app.ps1", "InstallSafety.psm1", "install-task.ps1", "uninstall-task.ps1")) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $Script) -Destination (Join-Path $Stage "scripts\$Script")
     }
     Copy-Item -LiteralPath ".\docs\INSTALLATION.md" -Destination (Join-Path $Stage "INSTALLATION.md")

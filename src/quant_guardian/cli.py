@@ -33,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run an offline state-machine demonstration",
     )
     parser.add_argument("--ui-smoke", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--watchdog", action="store_true", help="Verify Guardian sampling and recover only Guardian")
     parser.add_argument("--version", action="version", version=__version__)
     return parser
 
@@ -104,6 +105,11 @@ def _run_desktop(
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.watchdog:
+        from quant_guardian.watchdog import run_watchdog
+
+        result = run_watchdog(args.config, Path(sys.executable))
+        return 0 if result["status"] in {"healthy", "succeeded", "suspect"} else 1
     if args.simulate:
         print(json.dumps(run_simulation(), ensure_ascii=False, indent=2))
         return 0

@@ -5,6 +5,8 @@
 | Component | Tested version | Status |
 |---|---:|---|
 | Windows | Windows 10 / 11 x64 | Supported |
+| QMT (Plan A) | Broker build 2.1.33.0 | Process identity and read-only account/asset/count queries verified; no live restart drill |
+| Quantclass Client | 5.0.0 / Fusion 3.1 | Plan A and Plan X contracts; readiness and handoff monitoring |
 | QMT | 2.0.23.0 | Tested baseline |
 | Quantclass Client | 4.2.1 with Fusion 3.0.2/3.0.2a | Tested for process, log and UI-status monitoring |
 | Quantclass Client (legacy) | 4.1.1 with Zeus/Aqua | Compatibility monitoring retained |
@@ -23,6 +25,8 @@ Versions not listed above are unverified, not necessarily incompatible. Broker-c
 
 ## Python split
 
-The desktop application supports Python 3.11–3.14. The Release is built with Python 3.14.6. XTQuant is deliberately isolated in a compatible Python 3.11 child process so its native ABI does not constrain the UI runtime.
+The desktop application supports Python 3.11–3.14. miniQMT uses an isolated compatible Python 3.11 worker. Plan A uses the broker installation's own `bin.x64/pythonw.exe` and `Lib/site-packages/xtquant` against `userdata`; the standalone helper supports Python 3.6+. Guardian never copies a separate XTQuant package into QMT or changes the broker's file verification settings.
+
+Plan X has no external account probe. A healthy process and a generated plan cannot establish that a native strategy ran or a trade filled. Legacy full-QMT WebSocket mode has no verified read-only adapter and cannot trigger automatic recovery. Other broker builds require separate verification.
 
 Python 3.11.9 is the final 3.11 release with official Windows installers. Its use is limited to the isolated local probe; update XTQuant and the probe runtime when the vendor publishes a newer supported ABI.

@@ -6,7 +6,7 @@
 2. Compare the ZIP hash with:
 
 ~~~powershell
-Get-FileHash .\Quant-Guardian-v0.5.0-beta.2-windows-x64.zip -Algorithm SHA256
+Get-FileHash .\Quant-Guardian-v0.6.0-beta.1-windows-x64.zip -Algorithm SHA256
 ~~~
 
 3. Extract it to a normal user-owned directory, not a drive root, user profile root or Programs root.
@@ -30,6 +30,21 @@ The default destination is %LOCALAPPDATA%\Programs\Quant Guardian. Installation:
 - preserves an existing installation as a timestamped backup.
 
 Custom destinations are allowed only when they are not protected roots.
+
+## Startup and sampling watchdog
+
+After completing configuration, run `scripts/install-task.ps1`. It starts the installed Guardian at sign-in/daily startup and checks it every minute through `--watchdog`. The watchdog only recovers Guardian itself and respects hourly off-session monitoring. It does not enable QMT recovery or control Quantclass. `scripts/uninstall-task.ps1` removes this startup task.
+
+Plan A automatically uses the broker's own Python/XTQuant installation. Do not run the miniQMT Python/XTQuant installer inside a broker installation. Plan X shows process and plan-delivery evidence; actual native strategy execution remains unverified.
+
+Some full-QMT launchers require administrator privileges. Guardian checks this before closing QMT: a non-elevated Guardian refuses the restart and leaves the current QMT running. To authorize elevated Guardian startup, first exit Guardian, then run the following from an administrator PowerShell in the extracted release root:
+
+~~~powershell
+.\scripts\install-task.ps1 -RunElevated
+Start-ScheduledTask -TaskName "Quant Guardian"
+~~~
+
+This explicitly elevates Guardian, not Quantclass or its engines. The ordinary installer retains limited privileges by default. A configured recovery mode is not proof that unattended restart is ready; check the launch-permission status and perform a separately authorized after-hours recovery drill.
 
 ## Safe removal
 

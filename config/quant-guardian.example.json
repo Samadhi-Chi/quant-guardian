@@ -2,6 +2,8 @@
   "schema_version": 2,
   "mode": "observe",
   "qmt": {
+    "access_mode": "auto",
+    "main_process_name": "XtMiniQmt.exe",
     "launcher": "C:\\QMT\\bin.x64\\XtItClient.exe",
     "working_directory": "C:\\QMT\\config\\tradingtime",
     "userdata_directory": "C:\\QMT\\userdata_mini",
@@ -23,6 +25,7 @@
   },
   "trade_system": {
     "enabled": true,
+    "follow_client_data_root": true,
     "selection_engine": "auto",
     "data_root": "C:\\Quantclass\\data",
     "client_executable": "C:\\Quantclass\\quantclass.exe",
@@ -46,7 +49,8 @@
     "data_stall_confirmation_seconds": 300,
     "fuel_pause_heartbeat_stale_seconds": 180,
     "fuel_min_data_stale_seconds": 720,
-    "fuel_min_data_sessions": ["09:15-11:35", "13:00-15:05"],
+    "fuel_min_data_sessions": ["09:16-11:26", "13:01-15:01"],
+    "plan_directory": "real_trading\\plans",
     "task_log_tail_bytes": 262144
   },
   "monitoring": {

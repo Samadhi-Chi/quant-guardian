@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 
 from quant_guardian.config import AppConfig
 from quant_guardian.domain.models import ProbeStatus
-from quant_guardian.probe.supervisor import ProbeSupervisor
+from quant_guardian.probe.supervisor import ProbeObservation, ProbeSupervisor, create_probe
 
 
 class BusinessProbeManager:
@@ -42,6 +42,7 @@ class BusinessProbeManager:
         self._consecutive_failures = 0
         self._failures_since_rotation = 0
         self._last_success: dict[str, object] | None = None
+        self._last_partial: dict[str, object] | None = None
         self._latest: dict[str, object] = {
             "status": "pending",
             "reason": "等待首次只读委托汇总",
@@ -63,7 +64,7 @@ class BusinessProbeManager:
             self._probe_config,
             session_id=session_id,
         )
-        return ProbeSupervisor(probe_config, self._qmt_config)
+        return create_probe(probe_config, self._qmt_config)
 
     @property
     def latest(self) -> dict[str, object]:
@@ -72,6 +73,8 @@ class BusinessProbeManager:
 
     def maybe_request(self, now: datetime, *, active: bool) -> None:
         with self._lock:
+            if self._running and self._thread is not None and not self._thread.is_alive():
+                self._running = False
             if self._running or (self._next_due and now < self._next_due):
                 return
             self._running = True
@@ -99,12 +102,19 @@ class BusinessProbeManager:
     ) -> None:
         with self._lock:
             supervisor = self.supervisor
-        observation = supervisor.reconcile()
+        try:
+            observation = supervisor.reconcile()
+        except Exception as exc:
+            observation = ProbeObservation(
+                ProbeStatus.UNAVAILABLE, f"只读业务辅助程序异常（{type(exc).__name__}）",
+            )
         details = dict(observation.details or {})
         result: dict[str, object] = {
             "status": (
                 "healthy"
                 if observation.status is ProbeStatus.HEALTHY
+                else "partial"
+                if observation.status is ProbeStatus.PARTIAL
                 else "unavailable"
             ),
             "reason": observation.reason,
@@ -114,12 +124,15 @@ class BusinessProbeManager:
         }
         retry = observation.status is not ProbeStatus.HEALTHY
         old_supervisor: ProbeSupervisor | None = None
-        if refresh_calendar and not retry:
-            calendar = supervisor.calendar(
-                market=self.market,
-                start_date=f"{now:%Y}0101",
-                end_date=f"{now:%Y%m%d}",
-            )
+        if refresh_calendar and observation.status in {ProbeStatus.HEALTHY, ProbeStatus.PARTIAL}:
+            try:
+                calendar = supervisor.calendar(
+                    market=self.market,
+                    start_date=f"{now:%Y}0101",
+                    end_date=f"{now:%Y%m%d}",
+                )
+            except Exception:
+                calendar = ProbeObservation(ProbeStatus.UNAVAILABLE, "交易日历交叉校验暂不可用")
             calendar_details = dict(calendar.details or {})
             values = calendar_details.get("trading_dates")
             if (
@@ -155,15 +168,27 @@ class BusinessProbeManager:
                 self._consecutive_failures += 1
                 self._failures_since_rotation += 1
                 failed_at = str(result.get("sampled_at") or "")
-                if self._last_success:
+                if observation.status is ProbeStatus.PARTIAL:
+                    result["last_good_counts"] = {
+                        key: self._last_success.get(key)
+                        for key in ("orders", "cancelable_orders", "trades", "positions")
+                    } if self._last_success else {}
+                    result["last_success_at"] = (
+                        self._last_success.get("sampled_at", "") if self._last_success else ""
+                    )
+                    result["stale"] = True
+                    self._last_partial = dict(result)
+                elif self._last_success or self._last_partial:
+                    previous = self._last_partial or self._last_success or {}
                     result = {
-                        **self._last_success,
+                        **previous,
                         "status": "stale",
                         "reason": (
                             f"最新只读业务汇总失败：{observation.reason}；"
                             "保留上一次有效结果"
                         ),
-                        "last_success_at": self._last_success.get("sampled_at", ""),
+                        "last_success_at": self._last_success.get("sampled_at", "") if self._last_success else "",
+                        "last_valid_at": previous.get("sampled_at", ""),
                         "last_attempt_at": failed_at,
                         "last_error": observation.reason,
                         "consecutive_failures": self._consecutive_failures,
@@ -201,6 +226,7 @@ class BusinessProbeManager:
                     "stale": False,
                 }
                 self._last_success = dict(result)
+                self._last_partial = None
             self._latest = result
             self._running = False
         if old_supervisor is not None:
@@ -216,12 +242,13 @@ class BusinessProbeManager:
             self.supervisor = self._new_supervisor()
             self._consecutive_failures = 0
             self._failures_since_rotation = 0
-            if self._last_success:
+            previous = self._last_partial or self._last_success
+            if previous:
                 self._latest = {
-                    **self._last_success,
+                    **previous,
                     "status": "stale",
                     "reason": "QMT恢复后等待业务汇总复核，暂时保留上一次有效结果",
-                    "last_success_at": self._last_success.get("sampled_at", ""),
+                    "last_success_at": self._last_success.get("sampled_at", "") if self._last_success else "",
                     "last_attempt_at": now.isoformat(),
                     "consecutive_failures": 0,
                     "stale": True,

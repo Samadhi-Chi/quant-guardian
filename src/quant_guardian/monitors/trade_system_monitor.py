@@ -15,6 +15,7 @@ from quant_guardian.domain.components import (
     ComponentState,
     aggregate_state,
 )
+from quant_guardian.integration import ClientConfigReader
 from quant_guardian.monitors.rocket_monitor import RocketObservation
 
 _TIMESTAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:,\d+)?")
@@ -69,6 +70,9 @@ class _LogRuntime:
     last_result: str = "unknown"
     last_result_at: datetime | None = None
     last_error_summary: str = ""
+    plan_error_at: datetime | None = None
+    plan_success_at: datetime | None = None
+    plan_traceback: bool = False
 
 
 class IncrementalTaskLog:
@@ -116,6 +120,16 @@ class IncrementalTaskLog:
         for raw in lines:
             line = raw.rstrip("\r\n")
             at = _parse_timestamp(line)
+            if "生成目标占比调仓脚本失败" in line or "生成目标占比调仓脚本异常" in line:
+                self.runtime.plan_error_at = at
+                self.runtime.plan_traceback = True
+                continue
+            if "生成目标占比调仓脚本完成" in line:
+                self.runtime.plan_success_at = at
+            if self.runtime.plan_traceback:
+                if at is None:
+                    continue
+                self.runtime.plan_traceback = False
             if _START.search(line):
                 self.runtime.run_started_at = at
                 self.runtime.run_error = False
@@ -363,6 +377,7 @@ class TradeSystemMonitor:
     def __init__(self, config: TradeSystemConfig) -> None:
         self.config = config
         self.root = Path(config.data_root)
+        self._client_reader = ClientConfigReader(Path(config.quantclass_config))
         self._last_products: dict[str, Any] | None = None
         self._last_updates: dict[str, Any] | None = None
         self._aqua_log = IncrementalTaskLog(
@@ -1040,6 +1055,10 @@ class TradeSystemMonitor:
             },
             children=(fusion, aqua, zeus),
         )
+        client = self._client_reader.read()
+        order_expected = active_window
+        if client.available and client.valid:
+            order_expected = active_window and client.automatic_live is not False and client.mode != "planX"
         if rocket.active:
             rocket_state = (
                 ComponentState.CRITICAL
@@ -1048,7 +1067,7 @@ class TradeSystemMonitor:
                 if rocket.business_healthy
                 else ComponentState.WARNING
             )
-        elif active_window:
+        elif order_expected:
             rocket_state = ComponentState.WARNING
         else:
             rocket_state = ComponentState.IDLE
@@ -1056,7 +1075,7 @@ class TradeSystemMonitor:
             rocket.reason
             if rocket.active
             else "下单时段未检测到Rocket进程"
-            if active_window
+            if order_expected
             else "Rocket当前空闲，当前时段无需运行"
         )
         rocket_condition = (
@@ -1067,7 +1086,7 @@ class TradeSystemMonitor:
             else "rocket_business_unhealthy"
             if rocket.active
             else "rocket_missing_active_window"
-            if active_window
+            if order_expected
             else "rocket_idle"
         )
         order = ComponentNode(
@@ -1089,16 +1108,37 @@ class TradeSystemMonitor:
                 "business_health_known": rocket.business_health_known,
             },
         )
-        children = (data, selection, order)
+        extras: tuple[ComponentNode, ...] = ()
+        if client.available or not client.valid:
+            from quant_guardian.monitors.execution_monitor import execution_nodes
+
+            readiness, plan, handoff = execution_nodes(
+                self.config, client, now, active_window=active_window,
+                runtime=self._fusion_log.runtime,
+                client_running=bool(self._active_processes(self.config.client_process_names)),
+            )
+            extras = (readiness, plan, handoff)
+            if client.mode == "planX":
+                order = replace(
+                    order, state=ComponentState.IDLE, reason="Plan X 使用QMT原生计划，不要求Rocket进程",
+                    metrics={"engine": "QMT原生计划", "condition": "native_plan", "execution_confirmed": False},
+                )
+            elif client.automatic_live is False and not rocket.active:
+                order = replace(
+                    order, state=ComponentState.IDLE, reason="客户端自动实盘已关闭，未运行Rocket符合配置",
+                    metrics={**order.metrics, "condition": "operator_disabled"},
+                )
+        children = (data, selection, order, *extras)
+        relevant = tuple(child for child in children if child.metrics.get("selected") is not False)
         parent = ComponentNode(
             id="trade_system",
             name="Trade System",
-            state=aggregate_state(children),
+            state=aggregate_state(relevant),
             reason=(
                 "数据、选股或下单链路需要处理"
                 if any(
                     child.state in {ComponentState.CRITICAL, ComponentState.WARNING}
-                    for child in children
+                    for child in relevant
                 )
                 else "数据、选股与下单内核状态已汇总"
             ),
@@ -1119,5 +1159,7 @@ class TradeSystemMonitor:
                 "zeus_log": str(self._zeus_log.path),
                 "aqua_log": str(self._aqua_log.path),
                 "selection_status_directory": str(self._fusion_status.directory),
+                "execution_mode": client.mode,
+                "client_config_valid": client.valid,
             },
         )

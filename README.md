@@ -4,6 +4,8 @@
 
 Quant Guardian 是一个独立的 Windows 桌面监控工具，用于观察 QMT API、XTQuant 只读链路与 Quantclass 交易系统内核。它在严格的连续故障证据和安全闸门同时成立时，只对 QMT 执行受控恢复。可选的独立 Gateway 可通过 Telegram 或个人微信 iLink 私聊播报，并接受有限、可审计的固定命令。
 
+源码开发版 **v0.6.0-beta.1** 已适配 Quantclass Client 5.0 的 **Plan A（券商特邀）/ Plan X（原生计划）**。自动识别实际模式；Plan A 使用券商安装内配套的 Python/XTQuant，Plan X 不要求 Rocket，也不把计划文件当作已执行或已成交。[适配说明](docs/RELEASE_NOTES_v0.6.0-beta.1.md)
+
 [![CI](https://github.com/Samadhi-Chi/quant-guardian/actions/workflows/ci.yml/badge.svg)](https://github.com/Samadhi-Chi/quant-guardian/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/Samadhi-Chi/quant-guardian/actions/workflows/codeql.yml/badge.svg)](https://github.com/Samadhi-Chi/quant-guardian/actions/workflows/codeql.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -53,9 +55,11 @@ Quant Guardian 是一个独立的 Windows 桌面监控工具，用于观察 QMT 
 | QMT API | QMT 进程、XTQuant 会话、账户只读查询、委托/成交/持仓数量摘要 | 在安全条件满足时受控重启 QMT |
 | Trade System · 数据 | Fuel 最近任务、数据新鲜度、状态文件与增量日志 | 仅监控和提示 |
 | Trade System · 选股 | 自动识别 Fusion，兼容 Aqua/Zeus；汇总进程、日志与每日状态文件 | 仅监控和提示 |
-| Trade System · 下单 | Rocket 进程、日志心跳与执行状态 | 仅监控和提示 |
+| Trade System · 下单 | Plan A/miniQMT 的 Rocket；Plan X 的计划交付及未知执行状态 | 仅监控和提示 |
+| Trade System · 就绪与交接 | 自动实盘开关、客户端自检标记、非当前策略台账持仓 | 仅监控和提示 |
+| Guardian 自身 | 独立任务核对进程、心跳及数据库最新采样 | 持续过期后仅恢复 Guardian |
 
-Quant Guardian 不是交易策略，不会生成交易计划，不会下单或撤单。Quantclass Client 4.2.1 起由 Fusion 承担兼容原 Aqua/Zeus 配置的选股任务，旧内核仍可显式选择；Rocket 是唯一的下单内核。SCM 是配置工具，不作为交易链路健康条件。自动恢复永远不会启动、停止或修复 Quantclass、Fuel、Fusion、SCM、Aqua、Zeus 或 Rocket。
+Quant Guardian 不会生成交易计划、下单或撤单。Fusion 承担新版选股任务，兼容 Aqua/Zeus 监控。Client 5.0 的 Plan A 由客户端管理 Rocket；Plan X 则交付给 QMT 内部执行。SCM 是配置工具，不作为交易链路健康条件。自动恢复永远不会启动、停止或修复 Quantclass、Fuel、Fusion、SCM、Aqua、Zeus 或 Rocket。
 
 ### 消息与远程操作
 

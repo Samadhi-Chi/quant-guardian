@@ -387,6 +387,8 @@ class MainWindow(QMainWindow):
         )
         self.telegram_status_pill = PillLabel("Telegram 未配置", "neutral")
         self.weixin_status_pill = PillLabel("微信未配置", "neutral")
+        self.integration_pill = PillLabel("识别接入模式", "neutral")
+        heading_layout.addWidget(self.integration_pill)
         heading_layout.addWidget(self.telegram_status_pill)
         heading_layout.addWidget(self.weixin_status_pill)
         layout.addWidget(heading)
@@ -396,7 +398,7 @@ class MainWindow(QMainWindow):
         cards = QHBoxLayout()
         cards.setSpacing(14)
         self.qmt_check_button = _button("检测", "refresh")
-        self.qmt_check_button.setToolTip("立即检测QMT进程、XTQuant连接与只读接口")
+        self.qmt_check_button.setToolTip("按当前接入模式检测QMT进程、账户与只读接口")
         self.qmt_check_button.clicked.connect(lambda: self._run_check("qmt"))
         self.qmt_restart_button = _button("重启", "repair")
         self.qmt_restart_button.setToolTip("确认后人工重启QMT；不受观察模式限制")
@@ -404,9 +406,10 @@ class MainWindow(QMainWindow):
         self.restart_qmt_button = self.qmt_restart_button
         self.qmt_card = ComponentGroupCard(
             "QMT API",
-            "进程、XTQuant 连接、账户与只读委托汇总",
+            "自动识别 miniQMT / Plan A / Plan X；按模式验证可用能力",
             "terminal",
             (
+                ("qmt_api.runtime", "接入模式", "terminal"),
                 ("qmt_api.process", "QMT 进程", "process"),
                 ("qmt_api.xtquant", "XTQuant 连接", "link"),
                 ("qmt_api.account", "账户只读查询", "account"),
@@ -424,7 +427,7 @@ class MainWindow(QMainWindow):
         self.trade_restart_button.clicked.connect(self.manual_restart_trade_system)
         self.trade_card = ComponentGroupCard(
             "Trade System",
-            "Fuel 数据、Fusion 选股与 Rocket 下单（兼容 Aqua/Zeus）",
+            "Fuel 数据、Fusion 选股、执行就绪与策略交接",
             "layers",
             (
                 ("trade_system.data", "数据内核 · Fuel", "database"),
@@ -434,6 +437,9 @@ class MainWindow(QMainWindow):
                     "terminal",
                 ),
                 ("trade_system.order", "下单内核 · Rocket", "rocket"),
+                ("trade_system.readiness", "执行就绪", "link"),
+                ("trade_system.plan", "原生计划交付", "orders"),
+                ("trade_system.handoff", "策略交接", "layers"),
             ),
             actions=(self.trade_check_button, self.trade_restart_button),
         )
@@ -468,7 +474,7 @@ class MainWindow(QMainWindow):
         metrics.setHorizontalSpacing(12)
         self.availability_metric = MetricCard("整体可用率", "—", "QMT API 主链")
         self.latency_metric = MetricCard("QMT API 延迟", "—", "平均 / P95")
-        self.trade_metric = MetricCard("Trade System 成功率", "—", "含空闲有效样本")
+        self.trade_metric = MetricCard("内核状态正常率", "—", "有效采样；非任务或成交成功率")
         self.incident_metric = MetricCard("异常事件", "—", "所选时间范围")
         for column, card in enumerate(
             (self.availability_metric, self.latency_metric, self.trade_metric, self.incident_metric)
@@ -928,19 +934,35 @@ class MainWindow(QMainWindow):
         )
         qmt, qmt_layout = _section_frame("QMT API")
         qmt_form = _form()
+        self.qmt_access_mode = QComboBox()
+        for label, value in (
+            ("跟随量化客户端（推荐）", "auto"), ("miniQMT", "mini_qmt"),
+            ("Plan A · 券商特邀", "planA"), ("Plan X · 原生计划", "planX"),
+            ("大 QMT · 旧版桥接（只监控）", "qmt"),
+        ):
+            self.qmt_access_mode.addItem(label, value)
+        self.qmt_access_mode.setCurrentIndex(max(0, self.qmt_access_mode.findData(self.config.qmt.access_mode)))
         self.qmt_launcher = _line(self.config.qmt.launcher)
         self.qmt_workdir = _line(self.config.qmt.working_directory)
         self.qmt_userdata = _line(self.config.qmt.userdata_directory)
         self.qmt_logdir = _line(self.config.qmt.log_directory)
         self.probe_python = _line(self.config.probe.python_executable)
         self.xtquant_parent = _line(self.config.probe.xtquant_parent)
+        qmt_form.addRow("接入模式", self.qmt_access_mode)
         qmt_form.addRow("官方启动器", self.qmt_launcher)
         qmt_form.addRow("工作目录", self.qmt_workdir)
-        qmt_form.addRow("userdata_mini", self.qmt_userdata)
+        qmt_form.addRow("账户数据目录", self.qmt_userdata)
         qmt_form.addRow("QMT 日志", self.qmt_logdir)
         qmt_form.addRow("探针 Python", self.probe_python)
         qmt_form.addRow("XTQuant 目录", self.xtquant_parent)
         qmt_layout.addLayout(qmt_form)
+        runtime_note = QLabel(
+            "Plan A 自动使用券商安装内配套的 Python / XTQuant 和 userdata；"
+            "Plan X 仅验证进程及计划交付，不把文件生成视为成交。接口撤权或环境不可用不会触发自动重启。"
+        )
+        runtime_note.setWordWrap(True)
+        runtime_note.setObjectName("sectionCaption")
+        qmt_layout.addWidget(runtime_note)
         layout.addWidget(qmt)
         trade, trade_layout = _section_frame("Trade System")
         trade_form = _form()
@@ -970,6 +992,7 @@ class MainWindow(QMainWindow):
             self.config.trade_system.selection_status_directory
         )
         self.rocket_log = _line(self.config.trade_system.rocket_log_directory)
+        self.plan_directory = _line(self.config.trade_system.plan_directory)
         trade_form.addRow("组件", self.trade_enabled)
         trade_form.addRow("当前选股内核", self.selection_engine)
         trade_form.addRow("数据根目录", self.trade_root)
@@ -981,6 +1004,7 @@ class MainWindow(QMainWindow):
         trade_form.addRow("Zeus 日志（兼容）", self.zeus_log)
         trade_form.addRow("Aqua 日志（兼容）", self.aqua_log)
         trade_form.addRow("Rocket 日志目录", self.rocket_log)
+        trade_form.addRow("原生计划目录", self.plan_directory)
         trade_layout.addLayout(trade_form)
         layout.addWidget(trade)
         layout.addStretch()
@@ -2089,7 +2113,7 @@ class MainWindow(QMainWindow):
                 if isinstance(metrics, dict) and metrics.get("engine"):
                     selection_name = str(metrics["engine"])
                 break
-        self.trade_metric.set_value(trade, f"Fuel / {selection_name} 选股 / Rocket 下单")
+        self.trade_metric.set_value(trade, f"Fuel / {selection_name} / 下单；非成交率")
         self.incident_metric.set_value(incidents, coverage)
 
     @Slot(QModelIndex)
@@ -2135,9 +2159,19 @@ class MainWindow(QMainWindow):
             if not self._history or self._history[-1].at != sample.at:
                 self._history.append(sample)
         self.state_hero.update_status(status)
+        integration = status.integration or {}
+        self.integration_pill.setText(str(integration.get("label") or "等待识别接入模式"))
         self.qmt_card.update_component(components.get("qmt_api", {}))
+        qmt_children = components.get("qmt_api", {}).get("children", [])
+        for child in qmt_children:
+            if child.get("id") == "qmt_api.xtquant":
+                self.qmt_card.rows["qmt_api.xtquant"].name_label.setText(str(child.get("name", "接口连接")))
         trade_component = components.get("trade_system", {})
         self.trade_card.update_component(trade_component)
+        mode = str(integration.get("mode") or "")
+        self.trade_card.rows["trade_system.order"].name_label.setText(
+            "QMT 原生执行" if mode == "planX" else "下单内核 · Rocket"
+        )
         trade_children = (
             trade_component.get("children", [])
             if isinstance(trade_component, dict)
@@ -2168,7 +2202,11 @@ class MainWindow(QMainWindow):
             and not attention.get("required")
             and (status.schedule or {}).get("trading_day") is False
         )
-        if market_closed_healthy:
+        process_only = integration.get("query_scope") == "process_only"
+        if process_only and status.state is GuardianState.HEALTHY and not attention.get("required"):
+            self.top_state_pill.setText("执行待核对")
+            self.top_state_pill.set_tone("neutral")
+        elif market_closed_healthy:
             self.top_state_pill.setText("休市监控")
             self.top_state_pill.set_tone("neutral")
         elif status.state is GuardianState.HEALTHY and attention.get("required"):
@@ -2210,7 +2248,7 @@ class MainWindow(QMainWindow):
             palette = DARK if self._dark else LIGHT
             color = palette[
                 "idle"
-                if market_closed_healthy
+                if market_closed_healthy or process_only and not attention.get("required")
                 else "green"
                 if status.state is GuardianState.HEALTHY and not attention.get("required")
                 else "amber"
@@ -2297,6 +2335,7 @@ class MainWindow(QMainWindow):
     def save_settings(self) -> None:
         try:
             self.config.mode = str(self.mode_combo.currentData())
+            self.config.qmt.access_mode = str(self.qmt_access_mode.currentData())
             self.config.monitoring.allow_idle_recovery = self.allow_idle_recovery.isChecked()
             self.config.recovery.allow_qmt_restart_while_rocket_active = (
                 self.allow_qmt_with_rocket.isChecked()
@@ -2335,6 +2374,7 @@ class MainWindow(QMainWindow):
                 self.selection_status_directory.text().strip()
             )
             self.config.trade_system.rocket_log_directory = self.rocket_log.text().strip()
+            self.config.trade_system.plan_directory = self.plan_directory.text().strip()
             self.config.monitoring.active_start = self.active_start.time().toString("HH:mm")
             self.config.monitoring.active_end = self.active_end.time().toString("HH:mm")
             self.config.monitoring.active_interval_seconds = self.active_interval.value()

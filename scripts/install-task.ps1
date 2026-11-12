@@ -2,10 +2,14 @@
 param(
     [string]$Executable = "",
     [string]$Config = "",
-    [string]$DailyStart = "08:20"
+    [string]$DailyStart = "08:20",
+    [switch]$RunElevated
 )
 
 $ErrorActionPreference = "Stop"
+if ($RunElevated -and -not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    throw "Elevated startup must be explicitly installed from an administrator PowerShell."
+}
 $ProjectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 if (-not $Config) {
     $Config = Join-Path $env:LOCALAPPDATA "QuantGuardian\config\quant-guardian.json"
@@ -16,6 +20,7 @@ $Arguments = ""
 $WorkingDirectory = ""
 if (-not $Executable) {
     $Candidates = @(
+        (Join-Path $ProjectRoot "Quant Guardian\Quant Guardian.exe"),
         (Join-Path $env:LOCALAPPDATA "Programs\Quant Guardian\Quant Guardian.exe"),
         (Join-Path $ProjectRoot "dist\Quant Guardian\Quant Guardian.exe")
     )
@@ -31,7 +36,7 @@ if ($Executable) {
     if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) {
         throw "Quant Guardian executable was not found: $Executable"
     }
-    $Arguments = '--config "' + $Config + '"'
+    $Arguments = '--watchdog --config "' + $Config + '"'
     $WorkingDirectory = Split-Path -Parent $Executable
 } else {
     $Pythonw = Join-Path $ProjectRoot ".venv\Scripts\pythonw.exe"
@@ -53,7 +58,8 @@ $Triggers = @(
         -RepetitionInterval ([TimeSpan]::FromMinutes(1)) `
         -RepetitionDuration ([TimeSpan]::FromDays(3650)))
 )
-$Principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
+$TaskRunLevel = if ($RunElevated) { "Highest" } else { "Limited" }
+$Principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel $TaskRunLevel
 $Settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `

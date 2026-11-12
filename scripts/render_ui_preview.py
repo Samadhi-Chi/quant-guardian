@@ -8,7 +8,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from quant_guardian.config import AppConfig
 from quant_guardian.domain.models import GuardianState, RecommendedAction
@@ -20,7 +20,7 @@ from quant_guardian.ui.design_system import install_ui_font
 from quant_guardian.ui.main_window import MainWindow
 
 TZ = timezone(timedelta(hours=8))
-BASE = datetime(2026, 8, 10, 13, 8, tzinfo=TZ)
+BASE = datetime(2026, 11, 12, 13, 8, tzinfo=TZ)
 
 
 class Notifications:
@@ -67,7 +67,7 @@ def make_status(
             "qmt_api.process",
             "QMT进程",
             qmt_state,
-            "XtMiniQmt.exe、miniquote.exe 进程响应正常" if qmt_state == "healthy" else "XtMiniQmt.exe 进程缺失",
+            "XtItClient.exe 进程响应正常" if qmt_state == "healthy" else "XtItClient.exe 进程缺失",
             metrics={"processes": [{"pid": 24948}, {"pid": 26212}] if qmt_state == "healthy" else []},
         ),
         node(
@@ -172,6 +172,21 @@ def make_status(
             "target": "check",
         }
     interval = 5.0 if schedule_mode == "active" else 3600.0
+    for item in qmt_children:
+        item["reason"] = str(item["reason"]).replace("XtMiniQmt.exe、miniquote.exe", "XtItClient.exe").replace("XtMiniQmt.exe", "XtItClient.exe")
+    qmt_children[1]["name"] = "券商配套接口"
+    qmt_children.append(node("qmt_api.runtime", "接入模式", "healthy", "Plan A · 券商特邀"))
+    trade_children[1]["metrics"] = {"engine": "Fusion", "selected_engine": "fusion"}
+    trade_children[1]["reason"] = str(trade_children[1]["reason"]).replace("Zeus", "Fusion")
+    for item in trade_children[1]["children"]:
+        if item["metrics"].get("engine") == "Zeus":
+            item["metrics"]["engine"] = "Fusion"
+            item["id"] = "trade_system.selection.fusion"
+    trade_children.extend([
+        node("trade_system.readiness", "执行就绪", "healthy", "自动实盘已开启；客户端自检已通过", metrics={"condition": "ready"}),
+        node("trade_system.plan", "原生计划交付", "idle", "Plan A 不依赖原生计划；生成不代表成交", metrics={"selected": False}),
+        node("trade_system.handoff", "策略交接", "healthy", "当前台账未发现非当前策略标签；未做券商逐股对账"),
+    ])
     return ServiceStatus(
         state=state,
         action=action,
@@ -197,6 +212,7 @@ def make_status(
             "calendar_uncertain": False,
             "next_check_at": (at + timedelta(seconds=interval)).isoformat(),
         },
+        integration={"mode": "planA", "label": "Plan A · 券商特邀", "query_scope": "counts_only"},
     )
 
 
@@ -526,6 +542,9 @@ def main() -> int:
         credential_vault=vault,
     )
     window.resize(1120, 820)
+    for label in window.findChildren(QLabel):
+        if label.text() == "QMT 与交易系统守护":
+            label.setText("QMT 与交易系统守护 · 模拟数据")
 
     healthy = make_status()
     window.switch_page(0)

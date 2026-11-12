@@ -2,6 +2,15 @@
 
 All notable changes are documented here. Versions follow semantic versioning; pre-release identifiers use the corresponding Python package form internally.
 
+## [0.6.0-beta.1] - 2026-11-12
+
+- Discover Quantclass 5.0 Plan A / Plan X, preserving miniQMT compatibility and recovery limits across mode changes.
+- Isolate the broker's own Python 3.6+ / XTQuant ABI for Plan A read-only health and independent partial business counts.
+- Show execution readiness, native-plan delivery and legacy strategy-ledger handoff on the status page.
+- Prevent permission/environment failures from requesting QMT recovery; verify process exit before any replacement launch.
+- Add an external Guardian-only sampling watchdog to the scheduled task, respecting active/hourly cadence.
+- Keep original credentials, configuration, audit history and QMT-only recovery authority; never trade or repair strategy engines.
+
 ## [0.5.0-beta.2] - 2026-09-06
 
 Closed-market QMT status correction following the Quantclass 4.2.1 adaptation.

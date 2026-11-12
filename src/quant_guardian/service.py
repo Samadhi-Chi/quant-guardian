@@ -26,6 +26,7 @@ from quant_guardian.domain.models import (
 )
 from quant_guardian.domain.state_machine import GuardianStateMachine, StateMachinePolicy
 from quant_guardian.domain.trading_calendar import ScheduleDecision, TradingCalendar
+from quant_guardian.integration import ClientConfigReader, resolve_runtime
 from quant_guardian.monitors.log_monitor import LogObservation, QmtLogMonitor
 from quant_guardian.monitors.network_monitor import NetworkMonitor
 from quant_guardian.monitors.process_monitor import ProcessObservation, QmtProcessMonitor
@@ -36,9 +37,10 @@ from quant_guardian.monitors.trade_system_monitor import (
 )
 from quant_guardian.notifications import NotificationCenter
 from quant_guardian.probe.business import BusinessProbeManager
-from quant_guardian.probe.supervisor import ProbeObservation, ProbeSupervisor
+from quant_guardian.probe.supervisor import ProbeObservation, create_probe
 from quant_guardian.reconciliation import decide_reconciliation
 from quant_guardian.recovery.controller import RecoveryController
+from quant_guardian.recovery.launch_preflight import launch_permission_problem
 from quant_guardian.recovery.quantclass_controller import QuantclassController
 from quant_guardian.safety import SafetyGate
 
@@ -122,6 +124,7 @@ class ServiceStatus:
     components: dict[str, dict[str, Any]] = field(default_factory=dict)
     attention: dict[str, object] = field(default_factory=dict)
     schedule: dict[str, object] = field(default_factory=dict)
+    integration: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         value = asdict(self)
@@ -149,8 +152,11 @@ def _component_state_from_probe(value: ProbeStatus) -> ComponentState:
         return ComponentState.HEALTHY
     if value in {ProbeStatus.FAILED, ProbeStatus.TIMEOUT}:
         return ComponentState.CRITICAL
-    if value in {ProbeStatus.STARTING, ProbeStatus.UNAVAILABLE}:
+    if value in {ProbeStatus.STARTING, ProbeStatus.UNAVAILABLE, ProbeStatus.PARTIAL,
+                 ProbeStatus.PERMISSION_REQUIRED, ProbeStatus.CAPABILITY_DISABLED}:
         return ComponentState.WARNING
+    if value is ProbeStatus.NOT_APPLICABLE:
+        return ComponentState.IDLE
     return ComponentState.UNKNOWN
 
 
@@ -186,6 +192,16 @@ class GuardianService:
         runtime_root: Path | None = None,
     ) -> None:
         self.config = config
+        self.client_reader = ClientConfigReader(Path(config.trade_system.quantclass_config))
+        self.client_snapshot = self.client_reader.read()
+        self.runtime = resolve_runtime(config, self.client_snapshot)
+        runtime_config = self.runtime.config
+        self._default_process = process_monitor is None
+        self._default_log = log_monitor is None
+        self._default_probe = probe is None
+        self._default_recovery = recovery is None
+        self._default_trade = trade_system_monitor is None
+        self._default_rocket = rocket_monitor is None
         if runtime_root is None:
             directories = ensure_runtime_directories()
         else:
@@ -218,19 +234,19 @@ class GuardianService:
             if runtime_root is None
             else directories["state"] / "RECOVERY_ENABLED",
         )
-        self.process_monitor = process_monitor or QmtProcessMonitor(config.qmt)
+        self.process_monitor = process_monitor or QmtProcessMonitor(runtime_config.qmt)
         self.log_monitor = log_monitor or QmtLogMonitor(
-            Path(config.qmt.log_directory), config.thresholds.log_stale_seconds
+            Path(runtime_config.qmt.log_directory), config.thresholds.log_stale_seconds
         )
         self.network_monitor = network_monitor or NetworkMonitor()
-        self.rocket_monitor = rocket_monitor or RocketMonitor(config.rocket)
+        self.rocket_monitor = rocket_monitor or RocketMonitor(runtime_config.rocket)
         self.trade_system_monitor = trade_system_monitor or TradeSystemMonitor(
-            config.trade_system
+            runtime_config.trade_system
         )
         injected_probe = probe is not None
-        self.probe = probe or ProbeSupervisor(config.probe, config.qmt)
+        self.probe = probe or create_probe(runtime_config.probe, runtime_config.qmt)
         self.recovery = recovery or RecoveryController(
-            config,
+            runtime_config,
             self.process_monitor,  # type: ignore[arg-type]
             self.safety_gate,
             self.audit,
@@ -243,7 +259,7 @@ class GuardianService:
             _PassiveBusinessProbe()
             if injected_probe
             else BusinessProbeManager(
-                config,
+                runtime_config,
                 calendar_listener=self._update_calendar_cache,
             )
         )
@@ -272,6 +288,7 @@ class GuardianService:
         self._idle_failure_count = 0
         self._last_idle_failure_at: datetime | None = None
         self._isolated_probe_degraded = False
+        self._probe_recovery_block = ""
         self._last_trade_observation: TradeSystemObservation | None = None
         self._last_schedule: ScheduleDecision | None = None
         self._current_incident_id = ""
@@ -299,7 +316,12 @@ class GuardianService:
             schedule=self._schedule_dict(
                 started, initial_schedule, anomalous=False
             ),
+            integration=self._integration_details(),
         )
+        self.audit.record("runtime_profile_detected", {
+            "component_id": "qmt_api", "summary": f"已识别{self.runtime.label}",
+            **self._integration_details(),
+        }, moment=started)
 
     def _load_calendar_cache(self) -> None:
         try:
@@ -322,6 +344,67 @@ class GuardianService:
             self.calendar.update_market_dates(
                 [str(value) for value in dates], coverage_end=coverage
             )
+
+    def _refresh_runtime(self, at: datetime) -> None:
+        if self.client_reader.path != Path(self.config.trade_system.quantclass_config):
+            self.client_reader = ClientConfigReader(Path(self.config.trade_system.quantclass_config))
+        self.client_snapshot = self.client_reader.read()
+        if not self.client_snapshot.valid:
+            return
+        updated = resolve_runtime(self.config, self.client_snapshot)
+        if updated.fingerprint == self.runtime.fingerprint:
+            self.runtime = updated
+            if self._default_recovery:
+                self.recovery.config = updated.config
+            return
+        previous = self.runtime
+        if self._default_probe:
+            self.probe.stop()
+            self.business.stop()
+            self.probe = create_probe(updated.config.probe, updated.config.qmt)
+            self.business = BusinessProbeManager(
+                updated.config, calendar_listener=self._update_calendar_cache,
+            )
+        if self._default_process:
+            self.process_monitor = QmtProcessMonitor(updated.config.qmt)
+        if self._default_log:
+            self.log_monitor = QmtLogMonitor(
+                Path(updated.config.qmt.log_directory), self.config.thresholds.log_stale_seconds,
+            )
+        if self._default_trade:
+            self.trade_system_monitor = TradeSystemMonitor(updated.config.trade_system)
+        if self._default_rocket:
+            self.rocket_monitor = RocketMonitor(updated.config.rocket)
+        if self._default_recovery:
+            self.recovery = RecoveryController(
+                updated.config, self.process_monitor, self.safety_gate, self.audit,
+            )
+        self.runtime = updated
+        self.machine.reset_evidence(at)
+        self._idle_failure_count = 0
+        self._last_idle_failure_at = None
+        self._last_reconciliation = {}
+        self._probe_recovery_block = ""
+        self.audit.record(
+            "integration_mode_changed",
+            {"component_id": "qmt_api", "summary": f"接入模式：{previous.label} → {updated.label}",
+             "previous_mode": previous.mode, "mode": updated.mode, "result": "succeeded",
+             "reason": "已切换只读监控适配器；旧会话和样本已作废"},
+            moment=at,
+        )
+
+    def _integration_details(self) -> dict[str, object]:
+        client = self.client_snapshot
+        return {
+            "mode": self.runtime.mode, "label": self.runtime.label, "adapter": self.runtime.adapter,
+            "client_config_valid": client.valid, "client_config_available": client.available,
+            "automatic_live": client.automatic_live, "startup_live": client.startup_live,
+            "client_connection_checked": client.connection_checked,
+            "automatic_recovery_supported": self.runtime.automatic_recovery_supported,
+            "launch_permission_problem": launch_permission_problem(self.runtime.config.qmt.launcher),
+            "main_process": self.runtime.config.qmt.main_process_name,
+            "query_scope": "counts_only" if self.runtime.adapter in {"broker_runtime", "xtquant"} else "process_only",
+        }
 
     def _update_calendar_cache(self, values: list[str], coverage: date) -> None:
         self.calendar.update_market_dates(values, coverage_end=coverage)
@@ -895,11 +978,13 @@ class GuardianService:
         )
         connection_node = ComponentNode(
             id="qmt_api.xtquant",
-            name="XTQuant连接",
+            name="券商配套接口" if self.runtime.mode == "planA" else "XTQuant连接",
             state=probe_state,
             reason=(
                 "休市期间券商交易会话暂不可用，不视为故障"
                 if market_closed_session_idle
+                else "计划模式不使用外部API；进程在线不代表策略已执行"
+                if probe.status is ProbeStatus.NOT_APPLICABLE
                 else "Guardian独立探针超时；Rocket/QMT业务信号仍正常"
                 if isolated_probe_degraded
                 else
@@ -918,10 +1003,12 @@ class GuardianService:
         account_node = ComponentNode(
             id="qmt_api.account",
             name="账户只读查询",
-            state=probe_state,
+            state=ComponentState.UNKNOWN if probe.status is ProbeStatus.NOT_APPLICABLE else probe_state,
             reason=(
                 "休市期间账户只读查询暂停，不视为故障"
                 if market_closed_session_idle
+                else "此模式未查询账户，持仓与成交状态未知"
+                if probe.status is ProbeStatus.NOT_APPLICABLE
                 else "独立只读查询暂时超时，业务侧仍有成功心跳"
                 if isolated_probe_degraded
                 else
@@ -943,7 +1030,7 @@ class GuardianService:
             else ComponentState.HEALTHY
             if business_status == "healthy"
             else ComponentState.WARNING
-            if business_status in {"unavailable", "stale"}
+            if business_status in {"unavailable", "stale", "partial"}
             else ComponentState.UNKNOWN
         )
         business_node = ComponentNode(
@@ -969,6 +1056,9 @@ class GuardianService:
                     "latency_ms",
                     "sampled_at",
                     "last_success_at",
+                    "last_valid_at",
+                    "query_status",
+                    "last_good_counts",
                     "last_attempt_at",
                     "next_retry_at",
                     "consecutive_failures",
@@ -978,7 +1068,9 @@ class GuardianService:
             },
         )
         critical_children = (process_node, connection_node, account_node)
-        if market_closed_session_idle:
+        if probe.status is ProbeStatus.NOT_APPLICABLE and process.status is ProcessStatus.HEALTHY:
+            state = ComponentState.IDLE
+        elif market_closed_session_idle:
             state = ComponentState.IDLE
         elif any(child.state is ComponentState.CRITICAL for child in critical_children):
             state = ComponentState.CRITICAL
@@ -995,7 +1087,9 @@ class GuardianService:
         ):
             state = ComponentState.RECOVERING
         reason = (
-            "休市日：QMT进程正常，交易连接暂不可用；无需处理"
+            "计划模式：QMT进程正常，账户和执行结果需核对"
+            if probe.status is ProbeStatus.NOT_APPLICABLE and process.status is ProcessStatus.HEALTHY
+            else "休市日：QMT进程正常，交易连接暂不可用；无需处理"
             if market_closed_session_idle
             else "独立探针暂时超时；业务链路仍正常，不触发自动恢复"
             if isolated_probe_degraded
@@ -1003,14 +1097,24 @@ class GuardianService:
             if state is ComponentState.HEALTHY
             else transition.reason
         )
+        launch_problem = launch_permission_problem(self.runtime.config.qmt.launcher)
         return ComponentNode(
             id="qmt_api",
             name="QMT API",
             state=state,
             reason=reason,
             observed_at=at,
-            children=(process_node, connection_node, account_node, business_node),
+            children=(
+                ComponentNode(
+                    "qmt_api.runtime", "接入模式",
+                    ComponentState.WARNING if launch_problem else ComponentState.HEALTHY,
+                    self.runtime.label + ("；" + launch_problem if launch_problem else ""),
+                    at, metrics=self._integration_details(),
+                ),
+                process_node, connection_node, account_node, business_node,
+            ),
             metrics={
+                **self._integration_details(),
                 "log_signal": log.signal.value,
                 "log_reason": log.reason,
                 "log_is_supporting_evidence": True,
@@ -1071,14 +1175,31 @@ class GuardianService:
                     else "monitor"
                 ),
             }
+        if qmt.metrics.get("launch_permission_problem"):
+            return {
+                "required": True, "level": "warning",
+                "title": "自动恢复需要配置运行权限",
+                "message": str(qmt.metrics["launch_permission_problem"]),
+                "action": "查看监控证据", "target": "monitor",
+            }
         if trade.state in {ComponentState.CRITICAL, ComponentState.WARNING}:
+            candidates = [node for node in trade.children
+                          if node.metrics.get("selected") is not False
+                          and node.state in {ComponentState.CRITICAL, ComponentState.WARNING}]
+            culprit = max(candidates, key=lambda node: (node.state is ComponentState.CRITICAL, node.priority == "high"), default=trade)
             return {
                 "required": True,
                 "level": "critical" if trade.state is ComponentState.CRITICAL else "warning",
                 "title": "Trade System需要处理",
-                "message": trade.reason,
+                "message": culprit.reason,
                 "action": "查看Trade System事件",
                 "target": "monitor",
+            }
+        if qmt.metrics.get("query_scope") == "process_only":
+            return {
+                "required": False, "level": "neutral", "title": "计划执行结果待核对",
+                "message": "当前只验证QMT进程；不能据此确认计划运行、委托或成交。",
+                "action": "查看监控证据", "target": "monitor",
             }
         if qmt.state is ComponentState.IDLE:
             return {
@@ -1203,6 +1324,7 @@ class GuardianService:
                     }
                 ),
             ),
+            integration=self._integration_details(),
         )
 
     def run_once(
@@ -1226,9 +1348,9 @@ class GuardianService:
             return self.status
         try:
             at = now or datetime.now().astimezone()
+            self._refresh_runtime(at)
             schedule = self.calendar.schedule_at(at)
             self._last_schedule = schedule
-            self.business.maybe_request(at, active=schedule.mode == "active")
             process = self.process_monitor.observe()
             network_available = self.network_monitor.is_available()
             log = self.log_monitor.observe(at)
@@ -1243,7 +1365,13 @@ class GuardianService:
             )
             self._last_trade_observation = trade
             self._record_trade_system(trade)
-            if process.status in {
+            if not self.client_snapshot.valid:
+                probe = ProbeObservation(ProbeStatus.UNAVAILABLE, self.client_snapshot.reason)
+            elif self.runtime.adapter == "manual_plan":
+                probe = ProbeObservation(ProbeStatus.NOT_APPLICABLE, "Plan X 无外部账户探针；执行结果待核对")
+            elif self.runtime.adapter == "unavailable":
+                probe = ProbeObservation(ProbeStatus.UNAVAILABLE, self.runtime.reason)
+            elif process.status in {
                 ProcessStatus.MISSING,
                 ProcessStatus.IDENTITY_MISMATCH,
             }:
@@ -1253,11 +1381,17 @@ class GuardianService:
                 )
             else:
                 probe = self.probe.health()
+            if probe.status in {ProbeStatus.CAPABILITY_DISABLED, ProbeStatus.PERMISSION_REQUIRED}:
+                self._probe_recovery_block = probe.reason
+            elif probe.status is ProbeStatus.HEALTHY:
+                self._probe_recovery_block = ""
+            if probe.status is ProbeStatus.HEALTHY:
+                self.business.maybe_request(at, active=schedule.mode == "active")
             # Runtime logs are supporting evidence. They can explain a failure,
             # but a log-only disconnect cannot make a healthy API restart QMT.
             decision_log = (
                 log.signal
-                if probe.status is not ProbeStatus.HEALTHY
+                if probe.status not in {ProbeStatus.HEALTHY, ProbeStatus.NOT_APPLICABLE}
                 else LogSignal.POSITIVE
             )
             snapshot = HealthSnapshot(
@@ -1284,6 +1418,13 @@ class GuardianService:
                     "rocket_business_health_known": rocket.business_health_known,
                     "rocket_business_age_seconds": rocket.business_age_seconds,
                     "trade_system_state": trade.node.state.value,
+                    "access_mode": self.runtime.mode,
+                    "recovery_block_reason": (
+                        self.client_snapshot.reason if not self.client_snapshot.valid
+                        else self._probe_recovery_block if self._probe_recovery_block
+                        else self.runtime.reason if not self.runtime.automatic_recovery_supported
+                        and process.status is not ProcessStatus.HEALTHY else ""
+                    ),
                 },
             )
             market_closed_session_idle = self._is_market_closed_session_idle(
@@ -1388,11 +1529,13 @@ class GuardianService:
             recovery_otherwise_permitted = (
                 safety.live_actions_allowed and schedule_permits_recovery
             )
+            launch_problem = launch_permission_problem(self.runtime.config.qmt.launcher)
             transition = self.machine.observe(
                 decision_snapshot,
                 recovery_permitted=(
                     recovery_otherwise_permitted
                     and not rocket_blocks_automatic_qmt_recovery
+                    and not launch_problem
                 ),
                 recovery_block_reason=(
                     "QMT fault confirmed while Rocket is active with a fresh "
@@ -1400,7 +1543,7 @@ class GuardianService:
                     "and operator intervention is required"
                     if recovery_otherwise_permitted
                     and rocket_blocks_automatic_qmt_recovery
-                    else None
+                    else launch_problem or None
                 ),
             )
             self._record_transition(transition)
@@ -2057,6 +2200,7 @@ class GuardianService:
             components=current.components,
             attention=current.attention,
             schedule=current.schedule,
+            integration=current.integration,
         )
         self._publish_status(updated)
         return updated
@@ -2285,6 +2429,8 @@ class GuardianService:
             "consecutive_errors": self._monitor_consecutive_errors,
             "retry_at": retry_at.isoformat() if retry_at else "",
             "error": error,
+            "nominal_interval_seconds": self.calendar.schedule_at(at).interval_seconds,
+            "next_check_at": self.status.schedule.get("next_check_at", ""),
         }
         try:
             temporary = self._monitor_heartbeat_path.with_suffix(".tmp")

@@ -15,6 +15,8 @@ REQUIRED_SUFFIXES = {
     "scripts/install-app.ps1",
     "scripts/uninstall-app.ps1",
     "scripts/InstallSafety.psm1",
+    "scripts/install-task.ps1",
+    "scripts/uninstall-task.ps1",
     "INSTALLATION.md",
     "LICENSE",
     "NOTICE",
