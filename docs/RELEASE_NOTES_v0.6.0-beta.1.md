@@ -36,4 +36,6 @@ The scheduled task runs the new Guardian-only watchdog. Normal hourly gaps are r
 
 ## Validation boundary
 
+The locked tooling dependencies `certifi`, `filelock` and `msgpack` are updated to the audited fixed versions. Release dependency auditing remains a required gate, not an ignored warning.
+
 Read-only Plan A connectivity is verified on the local broker build listed in COMPATIBILITY.md. Recovery lifecycle and failure controls are exercised with fake processes; no live trading app is restarted as part of automated tests. Plan X still needs human confirmation of native strategy execution. Future vendor versions and other brokers remain unverified.
