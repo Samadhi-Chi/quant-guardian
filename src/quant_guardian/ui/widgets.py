@@ -210,6 +210,9 @@ class StateHero(QFrame):
         trade_attention = bool(attention.get("required")) and str(
             attention.get("title") or ""
         ).startswith("Trade System")
+        visible_attention = trade_attention or (
+            status.state is GuardianState.HEALTHY and bool(attention.get("required"))
+        )
         process_only = (status.integration or {}).get("query_scope") == "process_only" and not attention.get("required")
         tone_key = {
             GuardianState.HEALTHY: "green",
@@ -219,7 +222,7 @@ class StateHero(QFrame):
             GuardianState.MANUAL_REQUIRED: "red",
             GuardianState.LOCKOUT: "red",
         }.get(status.state, "blue")
-        if trade_attention:
+        if visible_attention:
             tone_key = "red" if attention.get("level") == "critical" else "amber"
         elif market_closed_healthy or process_only:
             tone_key = "blue"
@@ -228,7 +231,7 @@ class StateHero(QFrame):
         border = palette["border"]
         self.kicker_label.setText(
             "需要处理"
-            if trade_attention
+            if visible_attention
             else "计划监控"
             if process_only
             else "休市监控"
@@ -238,7 +241,7 @@ class StateHero(QFrame):
         self.kicker_label.setStyleSheet(f"color: {accent};")
         self.title_label.setText(
             str(attention.get("title"))
-            if trade_attention
+            if visible_attention
             else "QMT进程在线，执行结果待核对"
             if process_only
             else "今日休市，监控正常"
@@ -247,13 +250,13 @@ class StateHero(QFrame):
         )
         self.reason_label.setText(
             _plain_reason(
-                attention.get("message") if trade_attention or process_only else status.reason,
+                attention.get("message") if visible_attention or process_only else status.reason,
                 "等待下一次检测",
             )
         )
         icon_name = (
             "warning"
-            if trade_attention
+            if visible_attention
             else "clock"
             if market_closed_healthy
             else descriptor.icon

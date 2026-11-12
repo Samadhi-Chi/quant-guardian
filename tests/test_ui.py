@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -311,6 +312,16 @@ class UiTests(unittest.TestCase):
         self.assertEqual(len(window.task_chart.samples), 2)
         self.assertNotEqual(window.latency_metric.value_label.text(), "—")
         self.assertIn("ms", window.latency_metric.value_label.text())
+
+    def test_healthy_api_does_not_hide_recovery_permission_warning(self) -> None:
+        status = replace(make_status(), attention={
+            "required": True, "level": "warning",
+            "title": "自动恢复需要配置运行权限", "message": "Guardian需要管理员权限",
+            "target": "monitor",
+        })
+        window = self.make_window(status)
+        self.assertEqual(window.state_hero.title_label.text(), status.attention["title"])
+        self.assertIn("管理员", window.state_hero.reason_label.text())
 
     def test_monitor_metrics_separate_qmt_availability_from_trade_failures(self) -> None:
         samples = [
