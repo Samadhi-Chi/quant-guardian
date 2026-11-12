@@ -11,6 +11,8 @@ from typing import Any
 
 @dataclass(slots=True)
 class QmtConfig:
+    access_mode: str = "auto"
+    main_process_name: str = "XtMiniQmt.exe"
     launcher: str = r"C:\QMT\bin.x64\XtItClient.exe"
     working_directory: str = r"C:\QMT\config\tradingtime"
     userdata_directory: str = r"C:\QMT\userdata_mini"
@@ -49,6 +51,7 @@ class RocketConfig:
 @dataclass(slots=True)
 class TradeSystemConfig:
     enabled: bool = True
+    follow_client_data_root: bool = True
     selection_engine: str = "auto"
     data_root: str = r"C:\Quantclass\data"
     client_executable: str = r"C:\Quantclass\quantclass.exe"
@@ -80,11 +83,12 @@ class TradeSystemConfig:
     fuel_pause_heartbeat_stale_seconds: int = 180
     fuel_min_data_stale_seconds: int = 720
     fuel_min_data_sessions: list[str] = field(
-        default_factory=lambda: ["09:15-11:35", "13:00-15:05"]
+        default_factory=lambda: ["09:16-11:26", "13:01-15:01"]
     )
     rocket_expected_start: str = "09:00"
     rocket_startup_grace_seconds: int = 300
     task_log_tail_bytes: int = 262_144
+    plan_directory: str = r"real_trading\plans"
 
 
 @dataclass(slots=True)
@@ -178,6 +182,8 @@ class AppConfig:
             errors.append(f"unsupported schema_version: {self.schema_version}")
         if self.mode not in {"observe", "recover"}:
             errors.append("mode must be 'observe' or 'recover'")
+        if self.qmt.access_mode not in {"auto", "mini_qmt", "planA", "planX", "qmt"}:
+            errors.append("qmt.access_mode must be auto, mini_qmt, planA, planX or qmt")
         if self.monitoring.active_interval_seconds < 1:
             errors.append("active_interval_seconds must be >= 1")
         if self.monitoring.idle_interval_seconds < 60:

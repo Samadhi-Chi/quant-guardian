@@ -8,6 +8,8 @@ from quant_guardian.config import AppConfig
 from quant_guardian.domain.models import (
     GuardianState,
     HealthSnapshot,
+    ProbeStatus,
+    ProcessStatus,
     RecommendedAction,
     Transition,
 )
@@ -77,6 +79,16 @@ class GuardianStateMachine:
     def recovery_attempt_count(self) -> int:
         return len(self._attempt_times)
 
+    def reset_evidence(self, now: datetime) -> None:
+        """A mode switch invalidates samples, never recovery limits/lockout."""
+        self._failure_times.clear()
+        self._success_times.clear()
+        self.last_snapshot = None
+        self.verification_deadline = None
+        self.grace_until = now + timedelta(seconds=self.policy.startup_grace_seconds)
+        if self.state is not GuardianState.LOCKOUT:
+            self.state = GuardianState.STARTING
+
     def _transition(
         self,
         now: datetime,
@@ -143,6 +155,22 @@ class GuardianStateMachine:
                 RecommendedAction.LOCKOUT,
                 "recovery is locked until explicit user unlock",
                 snapshot,
+            )
+
+        blocked = str(snapshot.details.get("recovery_block_reason") or "")
+        if not blocked and snapshot.probe_status in {
+            ProbeStatus.CAPABILITY_DISABLED, ProbeStatus.PERMISSION_REQUIRED,
+            ProbeStatus.UNAVAILABLE, ProbeStatus.UNKNOWN,
+        }:
+            blocked = "接口权限或探针环境需要人工处理，重启QMT不能修复"
+        if not blocked and snapshot.process_status in {ProcessStatus.UNKNOWN, ProcessStatus.IDENTITY_MISMATCH}:
+            blocked = "QMT进程身份无法验证，禁止自动重启或重复启动"
+        if blocked:
+            self._failure_times.clear()
+            self._success_times.clear()
+            return self._transition(
+                now, GuardianState.MANUAL_REQUIRED, RecommendedAction.REQUIRE_MANUAL,
+                blocked, snapshot,
             )
 
         if snapshot.login_requires_manual:

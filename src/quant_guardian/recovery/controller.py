@@ -8,8 +8,9 @@ from pathlib import Path
 
 from quant_guardian.config import AppConfig
 from quant_guardian.diagnostics.audit import AuditLogger
-from quant_guardian.domain.models import HealthSnapshot, ProcessStatus, RecoveryResult
+from quant_guardian.domain.models import HealthSnapshot, ProbeStatus, ProcessStatus, RecoveryResult
 from quant_guardian.monitors.process_monitor import QmtProcessMonitor
+from quant_guardian.recovery.launch_preflight import launch_permission_problem
 from quant_guardian.recovery.windows_process_control import (
     request_graceful_close,
     terminate_exact,
@@ -32,13 +33,21 @@ class RecoveryController:
         self.audit = audit
         self._lock = threading.Lock()
 
-    def _launch(self) -> tuple[bool, str]:
+    def _launch_preflight(self) -> str:
         launcher = Path(self.config.qmt.launcher)
         working_directory = Path(self.config.qmt.working_directory)
         if not launcher.is_file():
-            return False, f"QMT launcher does not exist: {launcher}"
+            return f"QMT launcher does not exist: {launcher}"
         if not working_directory.is_dir():
-            return False, f"QMT working directory does not exist: {working_directory}"
+            return f"QMT working directory does not exist: {working_directory}"
+        return launch_permission_problem(str(launcher))
+
+    def _launch(self) -> tuple[bool, str]:
+        problem = self._launch_preflight()
+        if problem:
+            return False, problem
+        launcher = Path(self.config.qmt.launcher)
+        working_directory = Path(self.config.qmt.working_directory)
         try:
             subprocess.Popen(
                 [str(launcher)],
@@ -82,6 +91,15 @@ class RecoveryController:
         require_automatic_gate: bool,
     ) -> RecoveryResult:
         if require_automatic_gate:
+            if snapshot.probe_status in {
+                ProbeStatus.UNAVAILABLE, ProbeStatus.UNKNOWN, ProbeStatus.CAPABILITY_DISABLED,
+                ProbeStatus.PERMISSION_REQUIRED, ProbeStatus.NOT_APPLICABLE,
+            }:
+                return RecoveryResult(False, False, False, "当前接口能力或身份未验证，禁止自动重启")
+            if snapshot.details.get("recovery_block_reason"):
+                return RecoveryResult(False, False, False, str(snapshot.details["recovery_block_reason"]))
+            if self.config.qmt.access_mode in {"planX", "qmt", "unknown"}:
+                return RecoveryResult(False, False, False, "当前接入模式不支持自动恢复")
             if (
                 snapshot.rocket_blocks_automatic_recovery
                 and not self.config.recovery.allow_qmt_restart_while_rocket_active
@@ -100,13 +118,16 @@ class RecoveryController:
                 False, False, True, "another recovery is already running"
             )
         try:
+            problem = self._launch_preflight()
+            if problem:
+                return RecoveryResult(False, False, False, problem, {"stage": "launch_preflight"})
             observation = self.process_monitor.observe()
-            if observation.status is ProcessStatus.IDENTITY_MISMATCH:
+            if observation.status in {ProcessStatus.IDENTITY_MISMATCH, ProcessStatus.UNKNOWN}:
                 return RecoveryResult(
                     False,
                     False,
                     True,
-                    "process identity mismatch; refusing to terminate by name",
+                    "process identity mismatch or unverified identity; refusing to terminate or launch a duplicate",
                 )
             identities = self.process_monitor.validated_processes()
             self.audit.record(
@@ -126,7 +147,7 @@ class RecoveryController:
                 main_pids = {
                     identity.pid
                     for identity in identities
-                    if identity.name.casefold() == "xtminiqmt.exe"
+                    if identity.name.casefold() == self.config.qmt.main_process_name.casefold()
                 }
                 request_graceful_close(main_pids)
                 remaining = wait_for_exit(
@@ -138,6 +159,12 @@ class RecoveryController:
                         remaining,
                         Path(self.config.qmt.launcher).parent,
                     )
+                    if wait_for_exit(remaining, timeout=5):
+                        return RecoveryResult(
+                            False, False, True,
+                            "QMT仍在运行；可能权限不足，拒绝重复启动，请以相同权限运行Guardian",
+                            {"stage": "close_not_confirmed"},
+                        )
             launched, reason = self._launch()
             return RecoveryResult(
                 success=launched,

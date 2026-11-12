@@ -153,7 +153,7 @@ class ReadonlyXtQuantClient:
                 return ProbeResponse(
                     request_id=request_id,
                     ok=False,
-                    status="failed",
+                    status="capability_disabled" if login_status in {8, 9} else "failed",
                     reason="QMT account login status is not healthy",
                     latency_ms=int((time.perf_counter() - started) * 1000),
                     account_ref=mask_identifier(account_id),

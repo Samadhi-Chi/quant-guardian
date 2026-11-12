@@ -10,6 +10,12 @@ from quant_guardian.ui.design_system import LIGHT
 
 class EventTableModel(QAbstractTableModel):
     COLUMNS = ("时间", "组件", "类型", "级别", "摘要")
+    TYPE_NAMES = {
+        "integration_mode_changed": "接入模式变更",
+        "runtime_profile_detected": "识别接入模式",
+        "trade_system_state": "交易组件状态",
+        "qmt_probe_degraded": "只读探针降级",
+    }
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -75,7 +81,7 @@ class EventTableModel(QAbstractTableModel):
             values = (
                 time_value,
                 self._component_text(event.get("component_id")),
-                str(event.get("event_type") or ""),
+                self.TYPE_NAMES.get(str(event.get("event_type") or ""), str(event.get("event_type") or "")),
                 self._severity_text(event.get("severity")),
                 str(event.get("summary") or ""),
             )

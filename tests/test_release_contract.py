@@ -18,8 +18,8 @@ SYNTHETIC_TELEGRAM_TOKEN = ("123456789:" + "AAA" + ("b" * 32)).encode()
 class ReleaseContractTests(unittest.TestCase):
     def test_version_has_single_source_and_matches_public_tag(self) -> None:
         validate_project_metadata()
-        self.assertEqual(__version__, "0.5.0b2")
-        self.assertEqual(release_tag(__version__), "v0.5.0-beta.2")
+        self.assertEqual(__version__, "0.6.0b1")
+        self.assertEqual(release_tag(__version__), "v0.6.0-beta.1")
 
     def test_build_scripts_support_ci_python_without_repository_venv(self) -> None:
         project_root = Path(__file__).resolve().parents[1]

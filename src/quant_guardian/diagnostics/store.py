@@ -56,6 +56,7 @@ class MonitoringStore:
         self._ready = threading.Event()
         self._thread: threading.Thread | None = None
         self.last_error = ""
+        self._watchdog_offsets: dict[Path, int] = {}
         if enabled:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self._thread = threading.Thread(
@@ -214,6 +215,7 @@ class MonitoringStore:
                 self._finalize_legacy_recoveries(connection)
                 connection.commit()
             while True:
+                self._tail_watchdog_events(connection)
                 try:
                     item = self._queue.get(timeout=0.5)
                 except queue.Empty:
@@ -297,6 +299,32 @@ class MonitoringStore:
             self._upsert_derived_incident(connection, document, payload, row[1])
         self._finalize_legacy_recoveries(connection)
         connection.commit()
+
+    def _tail_watchdog_events(self, connection: sqlite3.Connection) -> None:
+        """Index the external watchdog without UI-thread IO or full-log reads."""
+        for path in self.audit_directory.glob("guardian-watchdog-*.jsonl"):
+            try:
+                offset = self._watchdog_offsets.get(path, 0)
+                if path.stat().st_size < offset:
+                    offset = 0
+                with path.open("rb") as stream:
+                    stream.seek(offset)
+                    while stream.tell() - offset < 65_536:
+                        start = stream.tell()
+                        line = stream.readline(65_536)
+                        if not line or not line.endswith(b"\n"):
+                            stream.seek(start)
+                            break
+                        try:
+                            document = json.loads(line.decode("utf-8-sig"))
+                        except (ValueError, UnicodeError):
+                            continue
+                        if isinstance(document, dict):
+                            self._insert_event(connection, document)
+                    self._watchdog_offsets[path] = stream.tell()
+                connection.commit()
+            except (OSError, sqlite3.Error):
+                continue
 
     @staticmethod
     def _finalize_legacy_recoveries(connection: sqlite3.Connection) -> None:

@@ -59,6 +59,10 @@ SENSOR_STATUS_LABELS = {
     "idle": "空闲",
     "recovering": "恢复中",
     "pending": "等待汇总",
+    "partial": "部分可用",
+    "permission_required": "需要授权",
+    "capability_disabled": "接口已停用",
+    "not_applicable": "此模式不适用",
 }
 
 
@@ -71,9 +75,9 @@ def sensor_tone(raw: object) -> str:
     value = str(raw or "unknown")
     if value in {"healthy", "positive"}:
         return "success"
-    if value in {"starting", "recovering", "neutral", "unknown", "idle", "pending"}:
+    if value in {"starting", "recovering", "neutral", "unknown", "idle", "pending", "not_applicable"}:
         return "info" if value == "starting" else "neutral"
-    if value in {"stale", "timeout", "unavailable", "warning"}:
+    if value in {"stale", "timeout", "unavailable", "warning", "partial", "permission_required", "capability_disabled"}:
         return "warning"
     return "danger"
 
@@ -206,6 +210,10 @@ class StateHero(QFrame):
         trade_attention = bool(attention.get("required")) and str(
             attention.get("title") or ""
         ).startswith("Trade System")
+        visible_attention = trade_attention or (
+            status.state is GuardianState.HEALTHY and bool(attention.get("required"))
+        )
+        process_only = (status.integration or {}).get("query_scope") == "process_only" and not attention.get("required")
         tone_key = {
             GuardianState.HEALTHY: "green",
             GuardianState.SUSPECT: "amber",
@@ -214,16 +222,18 @@ class StateHero(QFrame):
             GuardianState.MANUAL_REQUIRED: "red",
             GuardianState.LOCKOUT: "red",
         }.get(status.state, "blue")
-        if trade_attention:
+        if visible_attention:
             tone_key = "red" if attention.get("level") == "critical" else "amber"
-        elif market_closed_healthy:
+        elif market_closed_healthy or process_only:
             tone_key = "blue"
         accent = palette[tone_key]
         soft = palette[f"{tone_key}_soft"]
         border = palette["border"]
         self.kicker_label.setText(
             "需要处理"
-            if trade_attention
+            if visible_attention
+            else "计划监控"
+            if process_only
             else "休市监控"
             if market_closed_healthy
             else descriptor.kicker.upper()
@@ -231,20 +241,22 @@ class StateHero(QFrame):
         self.kicker_label.setStyleSheet(f"color: {accent};")
         self.title_label.setText(
             str(attention.get("title"))
-            if trade_attention
+            if visible_attention
+            else "QMT进程在线，执行结果待核对"
+            if process_only
             else "今日休市，监控正常"
             if market_closed_healthy
             else descriptor.title
         )
         self.reason_label.setText(
             _plain_reason(
-                attention.get("message") if trade_attention else status.reason,
+                attention.get("message") if visible_attention or process_only else status.reason,
                 "等待下一次检测",
             )
         )
         icon_name = (
             "warning"
-            if trade_attention
+            if visible_attention
             else "clock"
             if market_closed_healthy
             else descriptor.icon
@@ -401,10 +413,12 @@ class ComponentGroupCard(QFrame):
         if child.get("id") in {"qmt_api.xtquant", "qmt_api.account"}:
             return f"{float(latency):.0f} ms" if isinstance(latency, (int, float)) else ""
         if child.get("id") == "qmt_api.trading_snapshot":
-            if all(isinstance(values.get(key), int) for key in ("orders", "trades", "positions")):
+            if any(isinstance(values.get(key), int) for key in ("orders", "trades", "positions")):
+                def count(key):
+                    return str(values[key]) if isinstance(values.get(key), int) else "未知"
                 return (
-                    f"委托 {values['orders']} · 成交 {values['trades']} · "
-                    f"持仓 {values['positions']}"
+                    f"委托 {count('orders')} · 成交 {count('trades')} · "
+                    f"持仓 {count('positions')}"
                 )
         if child.get("id") == "trade_system.data":
             products = values.get("products")
@@ -658,6 +672,8 @@ class HealthSample:
     data_state: str = "unknown"
     selection_state: str = "unknown"
     order_state: str = "unknown"
+    qmt_state: str = ""
+    trade_state: str = ""
 
 
 def sample_from_status(status: ServiceStatus) -> HealthSample:
@@ -703,6 +719,8 @@ def sample_from_status(status: ServiceStatus) -> HealthSample:
             or "unknown"
         ),
         order_state=str(children.get("trade_system.order", {}).get("state") or "unknown"),
+        qmt_state=qmt_state,
+        trade_state=trade_state,
     )
 
 
@@ -745,7 +763,29 @@ def sample_from_document(document: dict[str, object]) -> HealthSample | None:
             or "unknown"
         ),
         order_state=str(children.get("trade_system.order", {}).get("state") or "unknown"),
+        qmt_state=qmt_state,
+        trade_state=trade_state,
     )
+
+
+def timeline_state(sample: HealthSample, component: str) -> str:
+    state = sample.qmt_state if component == "qmt_api" else sample.trade_state
+    if state:
+        return state
+    value = sample.qmt_ok if component == "qmt_api" else sample.trade_ok
+    return "healthy" if value is True else "critical" if value is False else "unknown"
+
+
+def core_sample_ok(sample: HealthSample) -> bool | None:
+    states = (sample.data_state, sample.selection_state, sample.order_state)
+    # Old samples without child evidence retain their historical interpretation.
+    if all(state == "unknown" for state in states):
+        return sample.trade_ok
+    if any(state in {"warning", "critical"} for state in states):
+        return False
+    if all(state in {"healthy", "idle"} for state in states):
+        return True
+    return None
 
 
 def filter_samples(samples: Iterable[HealthSample], range_key: str) -> list[HealthSample]:
@@ -828,8 +868,8 @@ class HealthTimelineWidget(QWidget):
         span = max(1.0, (end - start).total_seconds())
 
         lanes = (
-            ("QMT API", lambda s: s.qmt_ok),
-            ("Trade System", lambda s: s.trade_ok),
+            ("QMT API", lambda s: timeline_state(s, "qmt_api")),
+            ("Trade System", lambda s: timeline_state(s, "trade_system")),
         )
         painter.setFont(self.font())
         for lane_index, (label, getter) in enumerate(lanes):
@@ -850,7 +890,12 @@ class HealthTimelineWidget(QWidget):
                     else plot_left + plot_width
                 )
                 current = getter(values[span_start])
-                color = c["green"] if current is True else c["red"] if current is False else c["border_strong"]
+                color = {
+                    "healthy": c["green"],
+                    "warning": c["amber"],
+                    "critical": c["red"],
+                    "recovering": c["indigo"],
+                }.get(current, c["border_strong"])
                 painter.setBrush(QColor(color))
                 painter.drawRoundedRect(QRectF(x0, y + 2, max(3.0, x1 - x0 + 0.5), lane_height - 4), 2, 2)
                 span_start = index
@@ -1133,7 +1178,8 @@ def compute_trend_metrics(samples: Iterable[HealthSample], range_key: str) -> tu
         if ordered_latencies
         else None
     )
-    trade_values = [sample.trade_ok for sample in values if sample.trade_ok is not None]
+    core_values = [core_sample_ok(sample) for sample in values]
+    trade_values = [value for value in core_values if value is not None]
     trade_success = (
         sum(1 for value in trade_values if value) / len(trade_values) * 100
         if trade_values

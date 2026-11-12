@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -55,6 +56,34 @@ class ExplodingProcessMonitor:
 
 
 class RecoveryControllerTests(unittest.TestCase):
+    def test_launch_permission_is_checked_before_closing_any_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            controller = self.make_controller(directory, monitor=ExplodingProcessMonitor())
+            with patch.object(controller, "_launch_preflight", return_value="administrator required"), patch.object(controller, "_launch") as launch:
+                automatic = controller.recover(snapshot(), event_id="preflight-auto")
+                manual = controller.restart_manually(snapshot(), event_id="preflight-manual")
+            for result in (automatic, manual):
+                self.assertFalse(result.success)
+                self.assertFalse(result.live_action)
+                self.assertEqual(result.details["stage"], "launch_preflight")
+            launch.assert_not_called()
+
+    def test_missing_launcher_does_not_close_running_qmt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            controller = self.make_controller(directory, monitor=ExplodingProcessMonitor())
+            Path(controller.config.qmt.launcher).unlink()
+            result = controller.recover(snapshot(), event_id="missing-launcher")
+            self.assertFalse(result.live_action)
+            self.assertIn("does not exist", result.reason)
+
+    def test_unavailable_or_disabled_probe_is_never_repaired_by_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            controller = self.make_controller(directory)
+            with patch.object(controller, "_launch") as launch:
+                for status in (ProbeStatus.UNAVAILABLE, ProbeStatus.CAPABILITY_DISABLED, ProbeStatus.PERMISSION_REQUIRED):
+                    result = controller.recover(replace(snapshot(), probe_status=status), event_id="no-capability")
+                    self.assertFalse(result.live_action)
+            launch.assert_not_called()
     def make_controller(
         self,
         directory: str,
@@ -150,7 +179,7 @@ class RecoveryControllerTests(unittest.TestCase):
                 "quant_guardian.recovery.controller.request_graceful_close"
             ) as graceful, patch(
                 "quant_guardian.recovery.controller.wait_for_exit",
-                return_value=(item,),
+                side_effect=[(item,), ()],
             ), patch(
                 "quant_guardian.recovery.controller.terminate_exact"
             ) as terminate, patch.object(
@@ -182,6 +211,17 @@ class RecoveryControllerTests(unittest.TestCase):
                 launched, reason = controller._launch()
             self.assertFalse(launched)
             self.assertIn("blocked", reason)
+
+    def test_failed_close_never_launches_a_duplicate_qmt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            item = ProcessIdentity(42, "XtItClient.exe", str(Path(directory) / "qmt" / "bin.x64" / "XtItClient.exe"), 1.0, True)
+            controller = self.make_controller(directory, monitor=FakeProcessMonitor(identities=(item,)))
+            controller.config.qmt.main_process_name = "XtItClient.exe"
+            with patch("quant_guardian.recovery.controller.request_graceful_close"), patch("quant_guardian.recovery.controller.wait_for_exit", return_value=(item,)), patch("quant_guardian.recovery.controller.terminate_exact"), patch.object(controller, "_launch") as launch:
+                result = controller.recover(snapshot(), event_id="denied-close")
+            assert not result.success
+            assert result.details["stage"] == "close_not_confirmed"
+            launch.assert_not_called()
 
     def test_launch_uses_exact_configured_executable_and_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -43,6 +43,24 @@ class FakeSupervisor:
 
 
 class BusinessProbeTests(unittest.TestCase):
+    def test_partial_counts_survive_a_later_total_failure_without_turning_unknown_into_zero(self):
+        config = AppConfig()
+        manager = BusinessProbeManager(config)
+        now = datetime(2026, 11, 12, 10, 0, tzinfo=UTC)
+        manager.supervisor = FakeSupervisor(ProbeStatus.PARTIAL)
+        manager.supervisor.reconcile = lambda: ProbeObservation(
+            ProbeStatus.PARTIAL, "trades unknown", details={"orders": 5, "positions": 3, "trades": "unknown", "cancelable_orders": 0},
+        )
+        manager._running = True
+        manager._run(now, False, manager._generation)
+        manager.supervisor = FakeSupervisor(ProbeStatus.TIMEOUT)
+        manager._running = True
+        manager._run(now, False, manager._generation)
+        self.assertEqual(manager.latest["status"], "stale")
+        self.assertEqual(manager.latest["orders"], 5)
+        self.assertEqual(manager.latest["trades"], "unknown")
+        self.assertEqual(manager.latest["last_success_at"], "")
+        manager.stop()
     def test_calendar_coverage_uses_last_returned_date_not_requested_day(self) -> None:
         config = AppConfig()
         observed: list[tuple[list[str], date]] = []
